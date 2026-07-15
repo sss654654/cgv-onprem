@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0a0a0f" />
+  <title>CGV 예매</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- 상단 바 -->
+  <header class="topbar">
+    <div class="brand" id="homeBtn">CGV<span>예매</span></div>
+    <div class="top-right">
+      <div id="activeTimer" class="active-timer hidden">⏱ <b>01:00</b></div>
+      <div id="authArea" class="auth"></div>
+    </div>
+  </header>
+
+  <!-- 알림 토스트 -->
+  <div id="toast" class="toast hidden"></div>
+
+  <main id="app">
+    <!-- 1) 영화 목록 -->
+    <section id="screen-movies" class="screen">
+      <h1 class="title">지금 예매</h1>
+      <div id="movieList" class="movie-list"></div>
+    </section>
+
+    <!-- 2) 대기 화면 (폴링 — 멜론식: 순번·뒤 인원·예상시간) -->
+    <section id="screen-waiting" class="screen hidden">
+      <div class="wait-card">
+        <div class="wait-spinner"></div>
+        <div class="wait-title" id="waitMovieTitle">대기 중</div>
+        <div class="wait-rank">내 대기 순서 <b id="waitRank">-</b>번째</div>
+        <div class="wait-total">뒤에 <span id="waitBehind">-</span>명 · 예상 <span id="waitEta">-</span></div>
+        <div class="wait-hint">입장하면 자동으로 넘어갑니다 · 새로고침하면 순번이 뒤로 밀립니다</div>
+        <button class="btn ghost" id="waitLeave">나가기</button>
+      </div>
+    </section>
+
+    <!-- 전환 유예(입장 중...) -->
+    <section id="screen-entering" class="screen hidden">
+      <div class="wait-card">
+        <div class="wait-spinner"></div>
+        <div class="wait-title">입장 중…</div>
+        <div class="wait-hint">좌석 준비 중입니다</div>
+      </div>
+    </section>
+
+    <!-- 3) 회차(관) 선택 -->
+    <section id="screen-screenings" class="screen hidden">
+      <h1 class="title" id="scMovieTitle">회차 선택</h1>
+      <div id="screeningList" class="branch-list"></div>
+    </section>
+
+    <!-- 4) 좌석도 -->
+    <section id="screen-seats" class="screen hidden">
+      <div class="seat-head">
+        <button class="btn ghost small" id="seatsBack">← 관 선택</button>
+        <h1 class="title" id="seatScreeningTitle">좌석 선택</h1>
+      </div>
+      <div class="screen-label">SCREEN</div>
+      <div id="seatGrid" class="seat-grid"></div>
+      <div class="seat-legend">
+        <span><i class="s-free"></i> 선택가능</span>
+        <span><i class="s-taken"></i> 선점됨</span>
+        <span><i class="s-mine"></i> 내선택</span>
+      </div>
+      <div class="seat-foot">
+        <div class="sel-info">내 선택: <b id="mySeats">없음</b> · <span id="myPrice">0</span>원</div>
+        <button class="btn primary" id="toPay" disabled>결제하기</button>
+      </div>
+    </section>
+
+    <!-- 5) 결제 -->
+    <section id="screen-pay" class="screen hidden">
+      <div class="pay-card">
+        <h1 class="title">결제</h1>
+        <div class="pay-row"><span>회차</span><b id="payScreening">-</b></div>
+        <div class="pay-row"><span>좌석</span><b id="paySeats">-</b></div>
+        <div class="pay-row total"><span>결제금액</span><b id="payAmount">0</b>원</div>
+        <div class="pay-actions">
+          <button class="btn ghost" id="payBack">← 뒤로</button>
+          <button class="btn primary" id="payConfirm">결제 완료</button>
+        </div>
+        <div id="payStatus" class="pay-status hidden">PG 승인 중…</div>
+      </div>
+    </section>
+
+    <!-- 6) 완료 -->
+    <section id="screen-done" class="screen hidden">
+      <div class="done-card">
+        <div class="done-check">✓</div>
+        <h1 class="title">예매 완료</h1>
+        <div class="pay-row"><span>예매번호</span><b id="doneNo">-</b></div>
+        <div class="pay-row"><span>회차</span><b id="doneScreening">-</b></div>
+        <div class="pay-row"><span>좌석</span><b id="doneSeats">-</b></div>
+        <div class="pay-row total"><span>결제금액</span><b id="doneAmount">0</b>원</div>
+        <button class="btn primary" id="doneHome">처음으로</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- 시연용 대기열 생성기(개발/데모 도구) -->
+  <div id="sim" class="sim">
+    <div class="sim-head" id="simToggle">🧪 시뮬레이터 <span id="simCaret">▼</span></div>
+    <div class="sim-body">
+      <div class="sim-row">
+        <label>가짜 대기자</label>
+        <input id="simN" type="number" value="5" min="1" max="50" />
+        <button class="btn small primary" id="simAdd">추가</button>
+      </div>
+      <label class="sim-check"><input type="checkbox" id="simBot" /> 봇 자동예매(자리 순환)</label>
+      <div class="sim-status" id="simStatus">가짜 대기자 0명</div>
+      <button class="btn small ghost" id="simClear">전부 내보내기</button>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

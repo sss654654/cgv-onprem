@@ -1,0 +1,27 @@
+# ── 빌드 산출물 ──────────────────────────────
+# Go (queue-go) — 컴파일 바이너리
+queue-go/queue-go
+queue-go/queue-go.exe
+*.exe
+
+# Java (booking) — Maven 빌드 출력
+booking/target/
+*.class
+
+# Node (frontend는 바닐라라 없음 — 방어)
+frontend/node_modules/
+
+# ── 시크릿 / 로컬 환경 ────────────────────────
+.env
+.env.local
+*.local
+
+# ── 런타임 산출물 ─────────────────────────────
+e2e2.txt
+*.log
+
+# ── IDE / OS ─────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

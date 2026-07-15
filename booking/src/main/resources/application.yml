@@ -1,0 +1,102 @@
+# booking 설정 — env 주입(없으면 로컬 기본값). docker-compose가 MYSQL_*/REDIS_*/KAFKA_* 주입.
+server:
+  port: ${PORT:8091}
+  shutdown: graceful            # SIGTERM 시 처리 중 요청 완료 후 종료 (§2-C)
+
+spring:
+  application:
+    name: cgv-booking
+
+  lifecycle:
+    timeout-per-shutdown-phase: 30s   # graceful 종료 최대 대기(§2-C)
+
+  # 가상 스레드(Java 21) — booking은 블로킹 I/O 워크로드(DB 트랜잭션 + PG 동기 호출).
+  # 요청마다 가상스레드 → 블로킹 시 OS 스레드 안 묶고 파킹 → OS 스레드 풀 천장 제거 + 요청당 메모리↓.
+  # 효과: 동시성 병목이 "스레드 풀"에서 "DB 커넥션 풀"로 이동(거기가 옳은 자리). 사이징은 DB 풀을 튜닝(§3-3, §3-5).
+  threads:
+    virtual:
+      enabled: ${VIRTUAL_THREADS:true}   # 2-2 k3s=true. 로컬 진단 중 env로 off 가능.
+
+  # MySQL — 영구 기록(예매 확정). 부팅 시 mysql이 늦게 떠도 재시도되게 hikari 설정.
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:cgv}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:password}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      # 실질 동시성 상한 — 가상스레드가 스레드 천장을 없애니, 동시 DB 작업의 한계는 이 풀 크기.
+      # X(파드당 동시 active)는 이 값·DB·PG로 정해짐 → 2-2 부하테스트로 측정·튜닝(지금은 기본값).
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      initialization-fail-timeout: 60000   # mysql 늦게 떠도 최대 60s 재시도(앱 레벨 readiness)
+      connection-timeout: 10000
+
+  jpa:
+    hibernate:
+      ddl-auto: ${DDL_AUTO:none}   # 기본 none(§2-E): 스키마는 배포 Job이 생성. 로컬 단일파드만 DDL_AUTO=update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+    open-in-view: false
+
+  # Redis — 좌석락(SET NX EX)·입장인증(admitted Set). queue와 같은 Redis 인스턴스 공유.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+  # Kafka — admissions 소비(→admitted) / bookings-completed 발행(→queue ZREM).
+  kafka:
+    bootstrap-servers: ${KAFKA_BROKER:localhost:9092}
+    consumer:
+      group-id: booking                       # queue가 기대하는 GroupID
+      auto-offset-reset: earliest             # 커밋 오프셋 없을 때만(새 그룹·만료) 적용되는 복구 정책
+      enable-auto-commit: false               # 후커밋(§3-1): process(SADD)→commit = 유실 없는 at-least-once
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    listener:
+      ack-mode: record                        # 리스너 정상 리턴 후 오프셋 커밋(레코드 단위) = 후커밋 명시
+      observation-enabled: true               # Kafka 소비 지표(micrometer). trace는 tracing bridge 추가 후(§7 [보류③])
+    template:
+      observation-enabled: true               # Kafka 발행 지표. trace는 tracing bridge 추가 후
+
+# 도메인 픽스값(§3-1-8) — 시드·가격. env로 덮을 수 있게.
+cgv:
+  seed-on-start: ${SEED_ON_START:false}   # 기본 false(§2-E): DataSeeder 멀티팟 레이스 차단. 로컬 단일파드만 true
+  movie-id: kbo-allstar-2025
+  movie-title: "2026 KBO 올스타전 생중계"
+  price-per-seat: 6000
+  seat-lock-ttl-seconds: ${SEAT_LOCK_TTL:45}   # 데모 45초(§3-1-4 두 시계: 좌석락 45초 < 세션 60초). 실운영이면 300(5분).
+  branches: "용산아이파크몰,왕십리,영등포,강남,신촌"   # 지점 5
+  screens-per-branch: 4           # 관 4 → 회차 20
+  rows: 10                        # A~J
+  cols: 20                        # 1~20 → 관당 200석
+
+# 관측(§7) — Actuator: readiness(db·redis 필수, Kafka 제외 §2-B) + Prometheus metric 통로. 내부 전용(§5-A).
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true                        # /actuator/health/{liveness,readiness} (k8s probe용)
+      group:
+        readiness:
+          include: readinessState,db,redis   # MySQL·Redis 죽으면 not-ready. Kafka는 자동 indicator 없음(§7-A)
+  metrics:
+    tags:
+      application: cgv-booking
+  # 관측(§7) trace: 전 요청 샘플링(데모 1.0) + OTLP 전송처(Tempo). Kafka observation-enabled가
+  # 켜져 있어 HTTP·Kafka span은 자동 생성 — 여기선 샘플링율·전송처만 배선(코드 수술 없음).
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      # Boot 3.3.4 OTLP는 OTLP/HTTP만 지원 → 4318 HTTP 포트 + /v1/traces 경로.
+      # env명은 OTLP_HTTP_ENDPOINT(queue의 gRPC용 OTLP_GRPC_ENDPOINT와 분리 — 프로토콜/포트 비호환).
+      endpoint: ${OTLP_HTTP_ENDPOINT:http://localhost:4318/v1/traces}

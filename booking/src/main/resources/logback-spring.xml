@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 관측(§7) 구조화 로그 — STDOUT에 JSON 한 줄(LogstashEncoder).
+     기본 필드: @timestamp · level · logger_name · message · thread_name · 전체 MDC · stack_trace(예외 시).
+     MDC의 traceId·spanId는 micrometer-tracing이 자동 주입 → 로그↔트레이스 상관(Loki↔Tempo).
+     STDOUT 한 곳만 — 컨테이너 로그는 stdout 수집(§5). -->
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <!-- LogstashEncoder = includeMdc 기본 true(모든 MDC를 최상위 필드로) + includeContext,
+             includeStackTrace 기본 on. 별도 지정 없이 요구 필드(timestamp·level·logger·message·mdc·stack_trace) 충족. -->
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder"/>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>

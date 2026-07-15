@@ -1,0 +1,257 @@
+/* ============================================================
+   CGV 예매 — 디자인 토큰 기반 다크 UI
+   프레임워크 없이 CSS 커스텀 프로퍼티로 디자인 시스템(2026 표준).
+   폰트 = Pretendard(웹폰트, index.html에서 로드).
+   ============================================================ */
+
+:root{
+  /* ── 뉴트럴(표면 레벨) ── */
+  --bg:#0a0a0f;
+  --surface-1:#121219;      /* 카드 기본 */
+  --surface-2:#1a1a24;      /* 카드 위 요소 */
+  --surface-3:#22222e;      /* 인풋·호버 */
+  --line:#282833;
+  --line-soft:#20202a;
+
+  /* ── 브랜드(CGV 레드) ── */
+  --brand:#e2231a;
+  --brand-strong:#ff3b30;
+  --brand-tint:rgba(226,35,26,.14);
+  --brand-line:rgba(255,90,80,.45);
+
+  /* ── 텍스트 ── */
+  --txt:#f4f4f7;
+  --txt-2:#b6b6c2;
+  --txt-3:#77778a;
+
+  /* ── 상태 ── */
+  --ok:#2ecc71; --ok-dim:#1e7a45;
+  --warn:#ffb02e;
+  --seat-free:#2a2a38; --seat-free-line:#3a3a4d;
+  --seat-taken:#33222a; --seat-taken-line:#4a2f38;
+
+  /* ── 간격·라운드·그림자·모션 ── */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px; --sp-7:48px;
+  --r-1:8px; --r-2:12px; --r-3:16px; --r-4:22px; --r-full:999px;
+  --sh-1:0 1px 2px rgba(0,0,0,.4);
+  --sh-2:0 6px 20px rgba(0,0,0,.35);
+  --sh-3:0 16px 44px rgba(0,0,0,.5);
+  --ease:cubic-bezier(.4,0,.2,1);
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgba(226,35,26,.08), transparent 60%),
+    var(--bg);
+  color:var(--txt);
+  font-family:"Pretendard Variable","Pretendard",system-ui,-apple-system,"Segoe UI",sans-serif;
+  font-feature-settings:"tnum";
+  -webkit-font-smoothing:antialiased;
+  letter-spacing:-.01em;
+  line-height:1.5;
+}
+::selection{background:var(--brand-tint)}
+
+/* ── 상단 바 ── */
+.topbar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 24px;border-bottom:1px solid var(--line-soft);
+  position:sticky;top:0;z-index:20;
+  background:rgba(10,10,15,.72);backdrop-filter:blur(14px) saturate(1.2);
+}
+.brand{font-weight:800;font-size:21px;letter-spacing:-.03em;cursor:pointer;color:var(--brand)}
+.brand span{color:var(--txt);margin-left:5px;font-weight:600}
+.top-right{display:flex;align-items:center;gap:14px}
+
+#app{max-width:960px;margin:0 auto;padding:var(--sp-6) var(--sp-4) 72px}
+.screen{animation:fade .34s var(--ease)}
+.hidden{display:none!important}
+@keyframes fade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.title{font-size:24px;font-weight:800;margin:4px 0 var(--sp-5);letter-spacing:-.03em}
+
+/* ── 버튼 ── */
+.btn{
+  border:1px solid transparent;border-radius:var(--r-1);
+  padding:12px 20px;font-size:15px;font-weight:700;cursor:pointer;
+  color:var(--txt);background:var(--surface-3);
+  transition:transform .12s var(--ease),background .15s,border-color .15s,opacity .15s;
+  font-family:inherit;
+}
+.btn:hover{background:#2c2c3a}
+.btn:active{transform:translateY(1px)}
+.btn:focus-visible{outline:2px solid var(--brand-strong);outline-offset:2px}
+.btn.primary{background:var(--brand);color:#fff;box-shadow:0 4px 16px rgba(226,35,26,.3)}
+.btn.primary:hover{background:#f0281e}
+.btn.primary:disabled{background:#33222a;color:#7a5a5a;cursor:not-allowed;box-shadow:none}
+.btn.ghost{background:transparent;border-color:var(--line)}
+.btn.ghost:hover{background:var(--surface-2);border-color:var(--txt-3)}
+.btn.small{padding:8px 13px;font-size:13px;border-radius:var(--r-1)}
+
+/* ── 영화 목록 ── */
+.movie-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:var(--sp-4)}
+.movie-card{
+  background:var(--surface-1);
+  border:1px solid var(--line);border-radius:var(--r-3);
+  cursor:pointer;position:relative;overflow:hidden;
+  transition:transform .2s var(--ease),border-color .2s,box-shadow .2s;
+}
+.movie-card:hover{transform:translateY(-4px);border-color:var(--brand-line);box-shadow:var(--sh-2)}
+.movie-card:hover .movie-poster::after{opacity:1}
+
+/* 포스터 — 실사 이미지 대신 디자인 타일(오프라인·무저작권 안전). 이미지 원하면 background에 url() 교체. */
+.movie-poster{
+  position:relative;aspect-ratio:16/10;overflow:hidden;
+  background:
+    radial-gradient(120% 90% at 80% 0,rgba(226,35,26,.5),transparent 55%),
+    linear-gradient(150deg,#2a1418,#141420 60%,#0f0f16);
+  display:flex;align-items:center;justify-content:center;
+  border-bottom:1px solid var(--line);
+}
+.movie-poster::before{content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(115deg,transparent 0 22px,rgba(255,255,255,.02) 22px 23px)}
+.movie-poster::after{content:"";position:absolute;inset:0;
+  background:radial-gradient(400px 120px at 100% 0,rgba(255,90,80,.25),transparent 70%);opacity:0;transition:opacity .2s}
+.poster-emoji{font-size:52px;filter:drop-shadow(0 4px 12px rgba(0,0,0,.5));transform:rotate(-8deg)}
+.poster-live{position:absolute;top:12px;left:12px;font-size:11px;font-weight:800;color:#fff;background:var(--brand);padding:3px 9px;border-radius:var(--r-full);letter-spacing:.03em;box-shadow:0 2px 8px rgba(226,35,26,.5)}
+.poster-cap{position:absolute;bottom:10px;right:12px;font-size:11px;font-weight:800;color:rgba(255,255,255,.35);letter-spacing:.15em}
+.movie-body{padding:18px 20px 22px}
+.movie-card .badge{
+  display:inline-block;background:var(--brand-tint);color:var(--brand-strong);
+  font-size:11px;font-weight:800;padding:4px 9px;border-radius:var(--r-full);
+  border:1px solid var(--brand-line);margin-bottom:14px;letter-spacing:.02em;
+}
+.movie-card h3{margin:0 0 8px;font-size:19px;line-height:1.35;font-weight:700}
+.movie-card .time{color:var(--txt-3);font-size:13px}
+.movie-card .go{margin-top:18px;color:var(--brand-strong);font-weight:800;font-size:14px}
+
+/* ── 대기 / 입장 중 (멜론식) ── */
+.wait-card{
+  max-width:440px;margin:7vh auto 0;
+  background:linear-gradient(180deg,var(--surface-2),var(--surface-1));
+  border:1px solid var(--line);border-radius:var(--r-4);
+  padding:44px 34px;text-align:center;box-shadow:var(--sh-3);
+}
+.wait-spinner{
+  width:60px;height:60px;margin:0 auto var(--sp-5);
+  border:4px solid var(--surface-3);border-top-color:var(--brand);
+  border-radius:50%;animation:spin .9s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.wait-title{font-size:17px;font-weight:700;color:var(--txt-2);margin-bottom:var(--sp-5)}
+.wait-rank{font-size:14px;color:var(--txt-3)}
+.wait-rank b{
+  font-size:52px;line-height:1.05;color:var(--brand-strong);font-weight:800;
+  display:block;margin:6px 0;letter-spacing:-.03em;font-variant-numeric:tabular-nums;
+  transition:.3s var(--ease);
+}
+.wait-total{
+  color:var(--txt-2);font-size:14px;margin-top:var(--sp-3);
+  padding-top:var(--sp-3);border-top:1px solid var(--line-soft);
+  display:inline-block;min-width:220px;
+}
+.wait-total span{color:var(--txt);font-weight:700}
+.wait-hint{color:var(--txt-3);font-size:12.5px;margin:var(--sp-5) 0 var(--sp-4);line-height:1.6}
+
+/* ── 회차 선택 ── */
+.branch{margin-bottom:var(--sp-6)}
+.branch-name{font-size:14px;font-weight:800;color:var(--txt-2);margin:0 0 var(--sp-3);display:flex;align-items:center;gap:8px}
+.branch-name::before{content:"";width:6px;height:16px;background:var(--brand);border-radius:2px}
+.screen-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:var(--sp-3)}
+.sc-card{
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-2);
+  padding:18px 16px;cursor:pointer;text-align:center;
+  transition:transform .15s var(--ease),border-color .15s,background .15s;
+}
+.sc-card:hover{border-color:var(--brand-line);transform:translateY(-2px);background:var(--surface-3)}
+.sc-card .no{font-size:16px;font-weight:800;margin-bottom:8px}
+.sc-card .remain{font-size:12.5px;color:var(--ok);font-weight:600}
+.sc-card .remain.low{color:var(--warn)}
+.sc-card.soldout{opacity:.4;cursor:not-allowed;pointer-events:none}
+.sc-card.soldout .remain{color:var(--txt-3)}
+
+/* ── 좌석도 ── */
+.seat-head{display:flex;align-items:center;gap:var(--sp-3);margin-bottom:var(--sp-2)}
+.screen-label{
+  text-align:center;color:var(--txt-3);letter-spacing:10px;font-size:11px;font-weight:800;
+  padding-bottom:10px;margin:var(--sp-2) auto var(--sp-6);max-width:60%;
+  border-bottom:3px solid var(--line);border-radius:0 0 50%/0 0 100% 100%;
+  background:linear-gradient(180deg,rgba(226,35,26,.06),transparent);
+}
+.seat-grid{display:grid;grid-template-columns:auto repeat(20,1fr);gap:5px;max-width:660px;margin:0 auto;overflow-x:auto;padding-bottom:4px}
+.row-label{color:var(--txt-3);font-size:11px;display:flex;align-items:center;justify-content:center;font-weight:700}
+.seat{
+  aspect-ratio:1;border-radius:5px;background:var(--seat-free);border:1px solid var(--seat-free-line);
+  cursor:pointer;transition:transform .1s var(--ease),filter .1s,box-shadow .1s;font-size:0;min-width:16px;
+}
+.seat:hover{filter:brightness(1.5);transform:scale(1.08)}
+.seat.taken{background:var(--seat-taken);border-color:var(--seat-taken-line);cursor:not-allowed}
+.seat.taken:hover{filter:none;transform:none}
+.seat.mine{background:var(--brand);border-color:#ff6a60;box-shadow:0 0 0 2px var(--brand-tint),0 2px 8px rgba(226,35,26,.4)}
+.seat-legend{display:flex;gap:22px;justify-content:center;margin:var(--sp-5) 0;color:var(--txt-3);font-size:13px}
+.seat-legend i{display:inline-block;width:14px;height:14px;border-radius:4px;vertical-align:-2px;margin-right:7px}
+.seat-legend .s-free{background:var(--seat-free);border:1px solid var(--seat-free-line)}
+.seat-legend .s-taken{background:var(--seat-taken);border:1px solid var(--seat-taken-line)}
+.seat-legend .s-mine{background:var(--brand)}
+.seat-foot{display:flex;align-items:center;justify-content:space-between;max-width:660px;margin:0 auto;padding-top:var(--sp-4);border-top:1px solid var(--line);gap:var(--sp-4)}
+.sel-info{color:var(--txt-2);font-size:14px}
+.sel-info b{color:var(--txt);font-variant-numeric:tabular-nums}
+
+/* ── 결제 / 완료 ── */
+.pay-card,.done-card{
+  max-width:460px;margin:6vh auto 0;
+  background:linear-gradient(180deg,var(--surface-2),var(--surface-1));
+  border:1px solid var(--line);border-radius:var(--r-4);padding:36px 32px;box-shadow:var(--sh-2);
+}
+.done-card{text-align:center}
+.done-check{
+  width:66px;height:66px;line-height:66px;margin:0 auto var(--sp-4);border-radius:50%;
+  background:var(--ok);color:#fff;font-size:34px;font-weight:800;
+  box-shadow:0 6px 20px rgba(46,204,113,.35);animation:pop .45s var(--ease);
+}
+@keyframes pop{from{transform:scale(.5);opacity:0}to{transform:scale(1);opacity:1}}
+.pay-row{display:flex;justify-content:space-between;align-items:center;padding:15px 0;border-bottom:1px solid var(--line-soft);font-size:15px}
+.pay-row span{color:var(--txt-3)}
+.pay-row b{font-variant-numeric:tabular-nums}
+.pay-row.total{border-bottom:0;font-size:19px;margin-top:var(--sp-2)}
+.pay-row.total b{color:var(--brand-strong)}
+.pay-actions{display:flex;gap:var(--sp-3);margin-top:var(--sp-5)}
+.pay-actions .btn{flex:1}
+.pay-status{text-align:center;color:var(--brand-strong);margin-top:var(--sp-4);font-weight:700;font-size:14px}
+
+/* ── 상단 우측: 타이머 + 인증 ── */
+.active-timer{background:var(--brand-tint);border:1px solid var(--brand-line);color:#ff9089;padding:7px 13px;border-radius:var(--r-1);font-size:13px;font-weight:700;font-variant-numeric:tabular-nums}
+.active-timer b{color:var(--brand-strong)}
+.active-timer.warn{animation:pulse .9s infinite}
+@keyframes pulse{50%{opacity:.45}}
+.auth{display:flex;align-items:center;gap:10px}
+.auth .who{font-size:14px;color:var(--txt-2)}
+.auth .who i{color:var(--brand-strong);font-style:normal;font-weight:700}
+
+/* ── 시뮬레이터 패널 (개발/데모 도구) ── */
+.sim{position:fixed;right:20px;bottom:20px;width:258px;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--r-2);z-index:40;box-shadow:var(--sh-3);overflow:hidden}
+.sim-head{padding:12px 15px;font-size:13px;font-weight:800;cursor:pointer;background:var(--surface-2);display:flex;justify-content:space-between;align-items:center}
+.sim.collapsed .sim-body{display:none}
+.sim-body{padding:15px}
+.sim-row{display:flex;gap:8px;align-items:center;margin-bottom:11px}
+.sim-row label{font-size:13px;color:var(--txt-3);white-space:nowrap}
+.sim-row input{width:58px;background:var(--bg);border:1px solid var(--line);border-radius:var(--r-1);color:var(--txt);padding:7px 9px;font-size:13px;font-family:inherit}
+.sim-row input:focus-visible{outline:2px solid var(--brand-strong);outline-offset:1px}
+.sim-check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--txt-3);margin-bottom:11px;cursor:pointer}
+.sim-status{font-size:12px;color:var(--txt-3);margin-bottom:11px;min-height:16px}
+.btn.small.primary,.btn.small.ghost{padding:7px 11px;font-size:12px}
+
+/* ── 토스트 ── */
+.toast{position:fixed;left:50%;bottom:44px;transform:translateX(-50%);background:var(--surface-3);border:1px solid var(--line);padding:14px 24px;border-radius:var(--r-2);font-size:14px;font-weight:600;z-index:50;box-shadow:var(--sh-3);animation:toastin .28s var(--ease)}
+.toast.err{border-color:var(--brand-line);color:#ff9089}
+@keyframes toastin{from{opacity:0;transform:translate(-50%,12px)}to{opacity:1;transform:translate(-50%,0)}}
+
+/* ── 반응형 ── */
+@media (max-width:520px){
+  #app{padding:var(--sp-5) var(--sp-3) 64px}
+  .title{font-size:21px}
+  .wait-card,.pay-card,.done-card{padding:30px 22px}
+  .wait-rank b{font-size:44px}
+  .sim{right:12px;bottom:12px;width:220px}
+}

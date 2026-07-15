@@ -1,0 +1,99 @@
+# CGV 로컬 풀스택 — queue + booking + frontend + redis + mysql + kafka.
+# 브라우저는 http://localhost:8088 (frontend=게이트웨이)만 본다.
+# 내부 서비스는 호스트 포트 미노출(네이티브 redis 6379 충돌 회피).
+# readiness는 앱 레벨 재시도로 처리(booking mysql 60s 재시도, kafka 클라 재시도)
+# → depends_on은 단순 순서만.
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: cgv
+      MYSQL_ROOT_HOST: "%"   # root를 모든 호스트에서 허용. WSL 재시작으로 컨테이너 IP 대역이 바뀌어도
+                             # booking이 거절(Host not allowed)당하지 않게. (볼륨 초기화 시에만 반영됨)
+    volumes:
+      - mysql-data:/var/lib/mysql   # named 볼륨(관리됨, down -v로 정리)
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ppassword"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:3.8.1
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data   # 영속 경로 명시(§2-2). clean-shutdown 추적 → 재시작 안정.
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  queue:
+    build: ./queue-go
+    restart: unless-stopped
+    environment:
+      PORT: "8090"
+      REDIS_HOST: redis
+      KAFKA_BROKER: kafka:9092
+      MAX_SESSIONS: "2"          # 데모용 소정원(2명 즉시입장, 나머지 대기 → 승격 순환이 눈에 보임)
+      SESSION_TIMEOUT: "60"      # 데모용 1분(실운영 600=10분). 프론트 카운트다운·좌석락(45s)과 정합. §3-1-4
+      OTLP_GRPC_ENDPOINT: "localhost:4317"   # OTel/gRPC 전송처(queue 전용 env — booking의 HTTP와 분리). 로컬 compose엔 collector 없음 → exporter가 lazy 실패(비블로킹, §2-B). k3s가 실제 Tempo/collector 주입.
+    ports:
+      - "18090:8090"  # 검증용 직노출. 호스트 8090은 Wondershare(WsToastNotification)가 점유해 18090으로 우회(mirrored 모드에서 충돌).
+      - "19091:9091"  # /metrics(promauto, §7-B) 로컬 확인용. k3s에선 노출 안 함(ServiceMonitor만 접근 — §5-D).
+    depends_on:
+      - redis
+      - kafka
+
+  booking:
+    build: ./booking
+    restart: unless-stopped
+    environment:
+      PORT: "8091"
+      REDIS_HOST: redis
+      MYSQL_HOST: mysql
+      MYSQL_USER: root
+      MYSQL_PASSWORD: password
+      MYSQL_DB: cgv
+      KAFKA_BROKER: kafka:9092
+      OTLP_HTTP_ENDPOINT: "http://localhost:4318/v1/traces"   # OTLP/HTTP 전송처(booking 전용 env — Boot 3.3.4는 HTTP만, 4318+/v1/traces). 로컬엔 collector 없음 → lazy 실패(비블로킹). k3s가 실제 endpoint 주입.
+      DDL_AUTO: update           # 로컬 단일파드: Hibernate 스키마 자동생성(k3s 멀티팟은 none + 배포 Job).
+      SEED_ON_START: "true"      # 로컬 단일파드: DataSeeder 시드 활성(k3s는 false).
+      VIRTUAL_THREADS: "false"   # 로컬 진단: 가상스레드 원인 격리용(2-2 k3s에선 true)
+      JAVA_OPTS: "-XX:MaxRAMPercentage=75 -Djava.net.preferIPv4Stack=true"  # IPv4 바인딩(IPv6 only면 docker-proxy/클라가 못 붙음)
+    ports:
+      - "8091:8091"   # 단계3 검증용 직노출
+    depends_on:
+      - mysql
+      - redis
+      - kafka
+
+  # frontend — nginx 게이트웨이(정적 SPA + queue/booking 프록시). 브라우저 진입점.
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "8088:8080"   # 브라우저: http://localhost:8088 (nginx-unprivileged 8080)
+    depends_on:
+      - queue
+      - booking
+
+volumes:
+  mysql-data:
+  kafka-data:
