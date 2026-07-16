@@ -135,8 +135,10 @@ kafka/kafka.go     producer(admissions, RequireOne·재시도) + consumer(bookin
 | 변수 | 기본 | 뜻 |
 |---|---|---|
 | `PORT` | 8090 | 리슨 포트. compose에선 게이트웨이 :8088 경유가 정상 경로, 직노출은 호스트 **18090**(8090은 Wondershare 점유로 우회) |
-| `REDIS_HOST`/`REDIS_PORT` | localhost/6379 | Redis 주소 |
-| `REDIS_PASSWORD` | (빈 값) | prod에서 주입 |
+| `REDIS_HOST`/`REDIS_PORT` | localhost/6379 | Redis 주소(standalone 경로 — 로컬·sentinel env 없을 때) |
+| `REDIS_PASSWORD` | (빈 값) | Redis auth 비번(dev HA·prod 주입) |
+| `REDIS_MASTER_NAME` | (빈 값) | Sentinel master group명(=차트 sentinel.masterSet `cgvmaster`). SENTINEL_ADDRS 있을 때 유효 |
+| `REDIS_SENTINEL_ADDRS` | (빈 값) | Sentinel 주소(콤마 구분). **있으면 NewFailoverClient(HA), 없으면 standalone**(로컬 무손상) |
 | `MAX_SESSIONS` | 2 | 입장 정원(데모 소정원 — 동적정원은 2-2) |
 | `SESSION_TIMEOUT` | 60 | active 세션 수명(초). 데모 60(실운영 600) — 좌석락 45s < 세션 60s 정합 |
 | `QUEUE_PROCESS_INTERVAL` | 2000 | 승격 주기(ms) |
@@ -160,7 +162,7 @@ kafka/kafka.go     producer(admissions, RequireOne·재시도) + consumer(bookin
 - **리더 선출** (`SET queue:leader NX EX`) — 멀티팟에서 승격·타임아웃·스냅샷 루프는 리더 한 파드만(중복 방지).
 - **순번 캐싱** (`position_cache:{movie}` 스냅샷) — 10만이 초당 폴링하면 ZRANK 폭격 → 리더가 1-2초마다 스냅샷을 굽고 폴링은 O(1) 읽기. 단 ADMITTED/EXPIRED **판정만은 캐시 말고 ZSCORE 직접**(입장 발견이 지연되면 안 됨).
 - ~~관측 계측(promauto)~~ → **✔완료(2026-07-05)**: metrics/prom.go 7벌 + /metrics :9091(설계서 1부 §7-B 정본). 구조화 로그(slog JSON)·트레이스(OTel)만 남음 — Loki·Tempo 붙일 때.
-- ~~graceful shutdown·automaxprocs~~ → **✔완료(2026-07-04)**. Sentinel-aware만 남음(B §2 확정 후).
+- ~~graceful shutdown·automaxprocs·Sentinel-aware 클라이언트~~ → **✔완료**(graceful/automaxprocs 2026-07-04 · **Sentinel-aware 2026-07-16**: `NewFailoverClient` 토글). 실 failover는 §5 실클러스터 검증.
 - ~~Kafka 발행 실패 재시도~~ → **✔완료(2026-07-04)**: 재시도+보상 롤백+RETRY_LATER(정직한 실패) + 실패 카운터 노출(07-05).
 
 부하 축은 SSE의 "유지되는 연결"에서 **RPS**로 바뀌었다 — 파드는 요청 사이에 아무것도 안 들고, 스케일은 표준 HPA(CPU/RPS)로 충분. Redis가 유일한 부하 지점이라 방어가 위 캐싱이다(상세 = 올인원 §1-7).

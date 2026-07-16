@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -21,6 +22,8 @@ type Config struct {
 	KafkaBroker     string        // 서비스간 통신(admissions·bookings-completed)
 	RedisPoolSize   int           // Redis 커넥션 풀 크기. 0=라이브러리 기본(10×GOMAXPROCS — automaxprocs 교정 후 CPU limit 기준). 값은 부하 실측으로 확정(설계서 1부 §1).
 	MetricsPort     string        // /metrics 전용 포트(§5-D 분리 결정). 인그레스·Service엔 안 물리고 ServiceMonitor만 안다.
+	RedisMasterName    string   // Sentinel master group명(REDIS_SENTINEL_ADDRS 있을 때만 유효). 차트 sentinel.masterSet와 일치.
+	RedisSentinelAddrs []string // Sentinel 주소들(콤마 구분). 비면 standalone(고정 RedisAddr) — 로컬·dev 단일.
 }
 
 // Load는 환경변수에서 설정을 읽는다. REDIS_HOST/REDIS_PORT를 합쳐 Addr로.
@@ -39,6 +42,8 @@ func Load() Config {
 		KafkaBroker:     getenv("KAFKA_BROKER", "localhost:9092"),
 		RedisPoolSize:   int(getenvInt("REDIS_POOL_SIZE", 0)),
 		MetricsPort:     getenv("METRICS_PORT", "9091"),
+		RedisMasterName:    getenv("REDIS_MASTER_NAME", ""),
+		RedisSentinelAddrs: splitAddrs(getenv("REDIS_SENTINEL_ADDRS", "")),
 	}
 	// 하한 가드 — batch·정원이 0/음수면 승격 Lua의 전제가 깨짐(promote.go 가드와 이중 방어).
 	if cfg.BatchSize < 1 {
@@ -66,4 +71,20 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// splitAddrs는 콤마 구분 주소 문자열을 []string으로 쪼갠다(공백 트림·빈 항목 제거).
+// 비면 nil → redis.New가 standalone 경로(고정 Addr)를 탄다 — 로컬 compose·dev 단일 인스턴스.
+func splitAddrs(v string) []string {
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }

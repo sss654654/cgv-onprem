@@ -39,10 +39,12 @@ spring:
     open-in-view: false
 
   # Redis — 좌석락(SET NX EX)·입장인증(admitted Set). queue와 같은 Redis 인스턴스 공유.
+  # 기본(로컬·dev standalone) = host/port. k3s HA = redis-sentinel 프로파일(문서 맨 아래)로 sentinel 전환.
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}   # 로컬 auth off=빈값. dev HA/prd=redis-secret(#5).
 
   # Kafka — admissions 소비(→admitted) / bookings-completed 발행(→queue ZREM).
   kafka:
@@ -100,3 +102,18 @@ management:
       # Boot 3.3.4 OTLP는 OTLP/HTTP만 지원 → 4318 HTTP 포트 + /v1/traces 경로.
       # env명은 OTLP_HTTP_ENDPOINT(queue의 gRPC용 OTLP_GRPC_ENDPOINT와 분리 — 프로토콜/포트 비호환).
       endpoint: ${OTLP_HTTP_ENDPOINT:http://localhost:4318/v1/traces}
+
+---
+# redis-sentinel 프로파일 — k3s HA에서만 활성(SPRING_PROFILES_ACTIVE=redis-sentinel).
+# 로컬·dev standalone은 이 문서를 안 읽어 위쪽 host/port 경로 유지(빈 sentinel 블록이
+# standalone을 sentinel 모드로 오인해 깨는 Spring 함정을 프로파일로 회피 — 코드-반영 #3).
+spring:
+  config:
+    activate:
+      on-profile: redis-sentinel
+  data:
+    redis:
+      sentinel:
+        master: ${REDIS_MASTER_NAME:cgvmaster}          # 차트 sentinel.masterSet와 일치
+        nodes: ${REDIS_SENTINEL_NODES:redis.data.svc.cluster.local:26379}
+        password: ${REDIS_PASSWORD:}                     # bitnami auth.sentinel(기본 on): sentinel도 같은 비번

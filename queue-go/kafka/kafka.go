@@ -148,7 +148,10 @@ func tryCreateTopic(broker, topic string) error {
 		return err
 	}
 	defer cc.Close()
-	err = cc.CreateTopics(kafkago.TopicConfig{Topic: topic, NumPartitions: 1, ReplicationFactor: 1})
+	// ReplicationFactor -1 = 브로커 기본값(default.replication.factor)에 위임 —
+	// 로컬 단일브로커=RF1, k3s 3브로커=RF3(GitOps KafkaTopic CR·브로커 config와 정합).
+	// 하드코딩 RF1이면 3브로커에서도 복제 0 → 브로커 하나 죽으면 파티션 유실(#4).
+	err = cc.CreateTopics(kafkago.TopicConfig{Topic: topic, NumPartitions: 1, ReplicationFactor: -1})
 	if err != nil && !strings.Contains(err.Error(), "exist") { // already exists = 정상
 		return err
 	}

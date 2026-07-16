@@ -21,7 +21,26 @@ type Client struct {
 // Read/WriteTimeout 500ms: 미설정 시 기본 약 3초 — "느려짐"이 그 3초 동안 고루틴·풀을
 // 조용히 잠그는 꼬리가 되므로 수백 ms에서 fast fail(설계서 1부 §3-C). 실패는 에러로
 // 드러나 관측 신호가 된다.
-func New(addr, password string, poolSize int) *Client {
+func New(addr, password string, poolSize int, masterName string, sentinelAddrs []string) *Client {
+	// sentinelAddrs가 있으면 Sentinel-aware(FailoverClient): master가 승격되면 Sentinel에 재조회해
+	// 새 master로 재접속 → failover가 앱까지 반영된다(코드-반영 #3). 없으면 standalone(고정 Addr) =
+	// 로컬 compose·dev 단일 인스턴스 경로. 타임아웃·풀은 양쪽 동일(§3-C fast fail).
+	if len(sentinelAddrs) > 0 {
+		fo := &goredis.FailoverOptions{
+			MasterName:       masterName,
+			SentinelAddrs:    sentinelAddrs,
+			Password:         password,
+			SentinelPassword: password, // bitnami auth.sentinel(기본 on): sentinel도 같은 비번
+			DB:               0,
+			DialTimeout:      2 * time.Second,
+			ReadTimeout:      500 * time.Millisecond,
+			WriteTimeout:     500 * time.Millisecond,
+		}
+		if poolSize > 0 {
+			fo.PoolSize = poolSize
+		}
+		return &Client{rdb: goredis.NewFailoverClient(fo)}
+	}
 	opts := &goredis.Options{
 		Addr:         addr,
 		Password:     password,
