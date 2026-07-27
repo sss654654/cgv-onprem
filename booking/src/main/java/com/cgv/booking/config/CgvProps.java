@@ -15,6 +15,8 @@ public class CgvProps {
     private int screensPerBranch;
     private int rows;
     private int cols;
+    private int admittedTtlSeconds;   // 입장 인증(admitted) 만료 — queue 세션 타임아웃보다 길어야 함
+    private int maxSeatsPerRequest;   // 한 요청에 담을 수 있는 좌석 수 상한
 
     public String[] branchList() { return branches.split(","); }
 
@@ -34,4 +36,8 @@ public class CgvProps {
     public void setRows(int v) { this.rows = v; }
     public int getCols() { return cols; }
     public void setCols(int v) { this.cols = v; }
+    public int getAdmittedTtlSeconds() { return admittedTtlSeconds; }
+    public void setAdmittedTtlSeconds(int v) { this.admittedTtlSeconds = v; }
+    public int getMaxSeatsPerRequest() { return maxSeatsPerRequest; }
+    public void setMaxSeatsPerRequest(int v) { this.maxSeatsPerRequest = v; }
 }

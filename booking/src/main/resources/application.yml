@@ -71,6 +71,13 @@ cgv:
   movie-title: "2026 KBO 올스타전 생중계"
   price-per-seat: 6000
   seat-lock-ttl-seconds: ${SEAT_LOCK_TTL:45}   # 데모 45초(§3-1-4 두 시계: 좌석락 45초 < 세션 60초). 실운영이면 300(5분).
+  # 입장 인증 만료. queue가 회수 이벤트를 놓쳤을 때의 최후 방어라 queue의 세션 타임아웃보다 길어야 한다
+  # (짧으면 정상 세션이 중간에 인증을 잃고 좌석선택이 403이 된다).
+  # queue SESSION_TIMEOUT 기본 60초 → 그 3배.
+  admitted-ttl-seconds: ${ADMITTED_TTL:180}
+  # 한 요청에 담을 수 있는 좌석 수 상한. 상한이 없으면 좌석번호 수만 개를 담은 요청 하나가
+  # 그만큼의 키를 Lua로 넘겨, queue와 공유하는 단일 스레드 Redis를 그 실행 동안 통째로 멈춘다.
+  max-seats-per-request: ${MAX_SEATS_PER_REQUEST:8}
   branches: "용산아이파크몰,왕십리,영등포,강남,신촌"   # 지점 5
   screens-per-branch: 4           # 관 4 → 회차 20
   rows: 10                        # A~J

@@ -16,4 +16,6 @@ public class ApiException extends RuntimeException {
 
     public static ApiException forbidden(String msg) { return new ApiException(HttpStatus.FORBIDDEN, "NOT_ADMITTED", msg); }
     public static ApiException conflict(String msg) { return new ApiException(HttpStatus.CONFLICT, "SEAT_CONFLICT", msg); }
+    // 400 — 클라이언트 요청 자체가 규칙 위반(없는 좌석·개수 초과 등). 재시도해도 같은 결과라 409와 구분한다.
+    public static ApiException badRequest(String code, String msg) { return new ApiException(HttpStatus.BAD_REQUEST, code, msg); }
 }

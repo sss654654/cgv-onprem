@@ -1,6 +1,5 @@
 package com.cgv.booking.service;
 
-import com.cgv.booking.config.CgvProps;
 import com.cgv.booking.domain.Screening;
 import com.cgv.booking.redis.AdmittedService;
 import com.cgv.booking.redis.SeatLockService;
@@ -10,7 +9,9 @@ import com.cgv.booking.web.ApiException;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 // 회차(관) 선택 화면(§3-1-1): 이 방송의 관 목록 + 각 잔여좌석.
 // 잔여 = total − 임시점유(Redis) − 판매완료(MySQL). 두 출처 합산 필수(§3-1-1).
@@ -20,26 +21,40 @@ public class ScreeningService {
     private final BookingSeatRepository bookingSeats;
     private final SeatLockService locks;
     private final AdmittedService admitted;
-    private final CgvProps props;
 
     public ScreeningService(ScreeningRepository screenings, BookingSeatRepository bookingSeats,
-                            SeatLockService locks, AdmittedService admitted, CgvProps props) {
+                            SeatLockService locks, AdmittedService admitted) {
         this.screenings = screenings; this.bookingSeats = bookingSeats;
-        this.locks = locks; this.admitted = admitted; this.props = props;
+        this.locks = locks; this.admitted = admitted;
     }
 
     public record ScreeningView(String screeningId, String branch, int screenNo, int total, int remain) {}
 
+    // 이 화면은 입장 직후 첫 화면이라 정원 전체가 주기적으로 다시 부른다 = 요청당 왕복 수가 그대로 부하가 된다.
+    //   판매수: 회차마다 count 쿼리를 돌리지 않고 group by 한 번으로 전부 받는다(JDBC 왕복 2회).
+    //   점유수: 회차별 인덱스 Set을 읽는다(회차당 Redis 왕복 1회). 이 Redis는 queue가 대기열 폴링을
+    //           처리하는 인스턴스와 같아서, 여기서 왕복이 늘면 queue의 지연이 먼저 무너진다.
     public List<ScreeningView> listForMovie(String movieId, String requestId) {
         // 게이트(§3-1-3 ①): 방송 입장객 아니면 403.
         if (!admitted.isAdmitted(movieId, requestId)) {
             throw ApiException.forbidden("입장객이 아닙니다(미승인). 대기열을 거쳐 입장하세요.");
         }
         List<Screening> list = screenings.findByMovieIdOrderByBranchAscScreenNoAsc(movieId);
+        if (list.isEmpty()) return List.of();
+
+        List<String> ids = list.stream().map(Screening::getId).toList();
+        Map<String, Long> soldById = new HashMap<>();
+        for (Object[] row : bookingSeats.countGroupedByScreeningIds(ids)) {
+            soldById.put((String) row[0], ((Number) row[1]).longValue());
+        }
+
         List<ScreeningView> out = new ArrayList<>(list.size());
         for (Screening s : list) {
-            long sold = bookingSeats.countByScreeningId(s.getId());      // 판매완료(영구, MySQL)
-            long locked = locks.countLocked(s.getId());                  // 임시점유(Redis)
+            long sold = soldById.getOrDefault(s.getId(), 0L);   // 판매완료(영구, MySQL)
+            long locked = locks.countLocked(s.getId());          // 임시점유(Redis)
+            // sold와 locked는 겹치지 않는다 — 확정 커밋 직후 그 좌석의 락을 해제하고, 판매된 좌석은
+            // 다시 잠기지 않는다(select가 판매완료를 먼저 거른다). 커밋과 락 해제 사이 짧은 창에서만
+            // 겹칠 수 있어 그때 잔여가 실제보다 작게 보이고, 다음 조회에서 복구된다.
             int remain = (int) Math.max(0, s.getTotalSeats() - sold - locked);
             out.add(new ScreeningView(s.getId(), s.getBranch(), s.getScreenNo(), s.getTotalSeats(), remain));
         }

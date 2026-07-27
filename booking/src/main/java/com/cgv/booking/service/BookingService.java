@@ -15,7 +15,10 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.TransactionTimedOutException;
 
 import java.util.HashSet;
 import java.util.List;
@@ -34,16 +37,19 @@ public class BookingService {
     private final BookingPersistence persistence;
     private final SeatLockService locks;
     private final AdmittedService admitted;
+    private final SeatRequest seatRequest;
     private final PaymentGateway pg;
     private final CompletedProducer completed;
     private final CgvProps props;
     private final MeterRegistry meterRegistry;
 
     public BookingService(ScreeningRepository screenings, BookingRepository bookings, BookingSeatRepository bookingSeats,
-                          BookingPersistence persistence, SeatLockService locks, AdmittedService admitted, PaymentGateway pg,
+                          BookingPersistence persistence, SeatLockService locks, AdmittedService admitted,
+                          SeatRequest seatRequest, PaymentGateway pg,
                           CompletedProducer completed, CgvProps props, MeterRegistry meterRegistry) {
         this.screenings = screenings; this.bookings = bookings; this.bookingSeats = bookingSeats; this.persistence = persistence;
-        this.locks = locks; this.admitted = admitted; this.pg = pg; this.completed = completed; this.props = props;
+        this.locks = locks; this.admitted = admitted; this.seatRequest = seatRequest; this.pg = pg;
+        this.completed = completed; this.props = props;
         this.meterRegistry = meterRegistry;
     }
 
@@ -55,7 +61,7 @@ public class BookingService {
 
     public record Result(String bookingId, String screeningId, List<String> seatNos, int price) {}
 
-    public Result confirm(String screeningId, List<String> seatNos, String requestId, String idempotencyKey) {
+    public Result confirm(String screeningId, List<String> rawSeatNos, String requestId, String idempotencyKey) {
         Screening sc = screenings.findById(screeningId)
                 .orElseThrow(() -> {
                     countConfirm("no_screening");
@@ -63,13 +69,15 @@ public class BookingService {
                 });
         String movieId = sc.getMovieId();
 
-        // ① 게이트(§3-1-5)
-        if (!admitted.isAdmitted(movieId, requestId)) {
-            countConfirm("forbidden");
-            throw ApiException.forbidden("입장객이 아닙니다.");
-        }
+        // ① 요청 정규화(중복 제거·정렬·개수 상한). 외부 I/O 전에 끝낸다.
+        List<String> seatNos = seatRequest.normalize(rawSeatNos);
 
         // ② 멱등(§3-1-5): 같은 결제 두 번 → 기존 결과 반환(재결제 안 함).
+        //
+        // 게이트보다 먼저 본다. 확정에 성공하면 입장 인증이 소진되므로, 게이트가 앞에 있으면
+        // "결제는 됐는데 응답이 유실돼 클라이언트가 같은 멱등키로 재시도"하는 경로가 403으로 막힌다
+        // — 돈은 빠졌는데 예매번호를 못 받고, 지표에도 replay가 아니라 forbidden으로 찍힌다.
+        // 멱등키 조회는 상태를 바꾸지 않고, 키는 요청자만 아는 값이며, 회차·좌석이 다르면 아래에서 409로 거절한다.
         var existing = bookings.findByIdempotencyKey(idempotencyKey);
         if (existing.isPresent()) {
             Booking b = existing.get();
@@ -78,7 +86,28 @@ public class BookingService {
             return new Result(b.getId(), b.getScreeningId(), seatNos, b.getPrice());
         }
 
-        // ③ 락 재확인 + 갱신(§2-D [7]): 결제 전 내 좌석 살아있으면 TTL 연장(PG 도는 사이 만료 방지).
+        // ③ 게이트(§3-1-5)
+        if (!admitted.isAdmitted(movieId, requestId)) {
+            countConfirm("forbidden");
+            throw ApiException.forbidden("입장객이 아닙니다.");
+        }
+
+        // ④ 좌석 실재·판매완료 확인. PG 승인 전에 해야 "승인 후 UNIQUE 위반 → 환불"이 안 생긴다.
+        //    실 PG였다면 그 경로는 카드사에 승인·취소가 한 쌍으로 남는다.
+        try {
+            seatRequest.ensureSeatsExist(screeningId, seatNos);
+        } catch (ApiException e) {
+            countConfirm("no_such_seat");
+            throw e;
+        }
+        try {
+            seatRequest.ensureNotSold(screeningId, seatNos);
+        } catch (ApiException e) {
+            countConfirm("already_sold");
+            throw e;
+        }
+
+        // ⑤ 락 재확인 + 갱신(§2-D [7]): 결제 전 내 좌석 살아있으면 TTL 연장(PG 도는 사이 만료 방지).
         if (!locks.renewMine(screeningId, seatNos, requestId)) {
             countConfirm("lock_expired");
             throw ApiException.conflict("좌석 점유가 만료되었거나 내 좌석이 아닙니다. 다시 선택하세요.");
@@ -86,10 +115,10 @@ public class BookingService {
 
         int price = seatNos.size() * props.getPricePerSeat();
 
-        // ④ 결제(PG 동기, §3-1-5). 승인 후 돈 빠짐.
+        // ⑥ 결제(PG 동기, §3-1-5). 승인 후 돈 빠짐.
         String paymentId = pg.approve(idempotencyKey, price);
 
-        // ⑤ 확정(트랜잭션, §3-1-6). 커밋 실패 → 롤백 → 보상(환불).
+        // ⑦ 확정(트랜잭션, §3-1-6). 커밋 실패 → 롤백 → 보상(환불).
         // UNIQUE 위반(좌석 선점 경합)만이 아니라 어떤 커밋 실패든 돈은 돌려준다
         // (커넥션 단절·데드락 등에서 "돈 빠지고 예매·환불 둘 다 없음" 경로 차단).
         String bookingId = "BK-" + UUID.randomUUID().toString().substring(0, 8);
@@ -109,13 +138,20 @@ public class BookingService {
             countConfirm("seat_conflict");
             safeRefund(paymentId);   // 좌석 선점 경합 → 돈 빠졌는데 좌석 못 줌 → 환불(보상)
             throw ApiException.conflict("이미 판매된 좌석이 있습니다. 결제는 자동 취소됩니다.");
+        } catch (PessimisticLockingFailureException | QueryTimeoutException | TransactionTimedOutException contention) {
+            // 데드락(1213)·락 대기 초과(1205)·트랜잭션 타임아웃. 원인은 좌석 경합이지 인프라 장애가 아니다.
+            // 이걸 아래 RuntimeException으로 흘리면 result=error로 집계돼 대시보드에서 "DB 죽음"으로 읽힌다.
+            countConfirm("lock_contention");
+            safeRefund(paymentId);
+            log.warn("확정 트랜잭션 락 경합: screening={} seats={} err={}", screeningId, seatNos, contention.toString());
+            throw ApiException.conflict("좌석 처리가 지연되어 결제를 취소했습니다. 다시 시도하세요.");
         } catch (RuntimeException e) {
             countConfirm("error");
-            safeRefund(paymentId);   // 기타 커밋 실패(DB 단절·데드락)도 보상 후 전파(§3-1-6)
+            safeRefund(paymentId);   // 기타 커밋 실패(DB 단절)도 보상 후 전파(§3-1-6)
             throw e;
         }
 
-        // ⑥ 완료(§3-1-7, 커밋 후 후처리): 락 해제 + queue에 자리반납 + 인증 소진.
+        // ⑧ 완료(§3-1-7, 커밋 후 후처리): 락 해제 + queue에 자리반납 + 인증 소진.
         // 예매는 이미 커밋됨 — 후처리 실패가 클라에 500으로 새면 "성공을 실패로 오인".
         // 각 단계는 실패해도 로그만 남기고 계속(락=TTL 자연회수 / 자리반납=세션 타임아웃이 최후 회수).
         try {
@@ -131,7 +167,7 @@ public class BookingService {
         try {
             admitted.remove(movieId, requestId);               // 인증 소진(재입장 전 재예매 불가)
         } catch (RuntimeException e) {
-            log.warn("admitted 소진 실패: movie={} req={} err={}", movieId, requestId, e.getMessage());
+            log.warn("admitted 소진 실패(TTL 만료가 최후 회수): movie={} req={} err={}", movieId, requestId, e.getMessage());
         }
 
         countConfirm("success");
