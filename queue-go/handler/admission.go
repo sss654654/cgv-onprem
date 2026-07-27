@@ -17,6 +17,10 @@ type AdmissionPublisher interface {
 	PublishAdmission(ctx context.Context, requestID, movieID string) error
 }
 
+// publishTimeout = enter 경로의 발행 상한. Writer의 시도당 타임아웃(1s)×재시도(3)와 백오프를
+// 덮되, 요청 스레드를 오래 잡지 않는 값. 여기서 끊겨도 저널이 남아 스윕이 이어받는다.
+const publishTimeout = 6 * time.Second
+
 // Admission = 대기열 진입(enter)·순번조회(position)·이탈(leave)·종료(complete) 핸들러.
 // 폴링 재설계(백엔드서비스-올인원.md §1) — SSE stream/Hub는 제거, position 폴링으로 대체.
 type Admission struct {
@@ -77,18 +81,30 @@ func (a *Admission) enter(c *gin.Context) {
 	// 안 하면 booking admitted set에 없어 좌석선택이 403.
 	// ADMITTED(첫 입장)일 때만 — ALREADY_ACTIVE(새로고침 재진입)까지 발행하면 중복.
 	if a.publisher != nil && res.Code == "ADMITTED" {
-		if err := a.publisher.PublishAdmission(c.Request.Context(), req.RequestID, req.MovieID); err != nil {
-			// (b) 정직한 실패(설계서 1부 §3-A, 필수 5): booking이 모르는 ADMITTED는
-			// 403 + 자리 점유를 낳으므로, active에 넣은 걸 되돌리고(보상 롤백) 재시도를 안내한다.
-			// 차례·정원 보존.
-			if _, rbErr := a.rdb.CompleteActive(c.Request.Context(), req.MovieID, req.RequestID); rbErr != nil {
-				slog.ErrorContext(c.Request.Context(), "enter 보상 롤백 실패(60s 타임아웃이 회수)", "req", req.RequestID, "movie", req.MovieID, "err", rbErr)
-			}
+		// 발행에는 요청 ctx를 쓰지 않는다. 클라이언트가 응답을 기다리다 끊으면(모바일 전환·
+		// k6 타임아웃) 요청 ctx가 취소되는데, kafka-go는 브로커에 이미 들어간 뒤에도 그 취소를
+		// 에러로 돌려준다 — 실패로 오판해 되돌리면 booking엔 입장이 들어갔는데 queue만 자리를
+		// 뺏는 유령 입장자가 생긴다. 발행은 클라이언트 수명과 분리한다.
+		pubCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), publishTimeout)
+		err := a.publisher.PublishAdmission(pubCtx, req.RequestID, req.MovieID)
+		cancel()
+		if err != nil {
+			// 되돌리지 않는다. Enter가 active 등록과 같은 원자 실행으로 발행 대기 저널에
+			// 남겨뒀으므로, 스윕 루프가 이어서 발행한다. 지금 되돌리면 위의 유령 입장자 경로가 열린다.
+			// 클라이언트에는 재시도를 안내한다 — Enter는 멱등이라 재시도하면 ALREADY_ACTIVE로 통과하고,
+			// 그사이 스윕이 발행을 끝낸다.
+			slog.WarnContext(c.Request.Context(), "enter 발행 실패(저널 보존 — 스윕이 재발행)", "req", req.RequestID, "movie", req.MovieID, "err", err)
 			c.JSON(http.StatusServiceUnavailable, gin.H{
 				"status": "RETRY_LATER",
 				"error":  "입장 처리가 지연되고 있습니다. 잠시 후 다시 시도해주세요.",
 			})
 			return
+		}
+		// 발행이 끝났으니 저널에서 지운다. 실패해도 스윕이 한 번 더 보낼 뿐이고
+		// booking의 admissions 소비는 SADD라 멱등이다.
+		member := redis.PendingMember(redis.KindAdmit, redis.ReasonEnter, req.RequestID)
+		if err := a.rdb.ClearPending(c.Request.Context(), req.MovieID, []string{member}); err != nil {
+			slog.WarnContext(c.Request.Context(), "enter 저널 정리 실패(중복 발행 가능, 소비는 멱등)", "req", req.RequestID, "err", err)
 		}
 	}
 	c.JSON(http.StatusOK, resp) // active 경로(ADMITTED/ALREADY_ACTIVE)
@@ -144,7 +160,8 @@ func (a *Admission) leave(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "movieId, requestId는 필수입니다"})
 		return
 	}
-	if err := a.rdb.Leave(c.Request.Context(), req.MovieID, req.RequestID); err != nil {
+	// active에 있던 사용자면 회수 이벤트가 발행 대기 저널에 남는다(스윕이 booking에 통보).
+	if err := a.rdb.Leave(c.Request.Context(), req.MovieID, req.RequestID, time.Now().UnixMilli()); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
 	}
@@ -158,7 +175,10 @@ func (a *Admission) complete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "movieId, requestId는 필수입니다"})
 		return
 	}
-	removed, err := a.rdb.CompleteActive(c.Request.Context(), req.MovieID, req.RequestID)
+	// 사용자가 부른 자리 반환이라 booking의 admitted는 아직 그 사용자를 들고 있다
+	// → 회수 이벤트를 저널에 남겨 스윕이 통보한다. (booking의 예매 확정으로 끝난 경우는
+	// bookings-completed 소비 경로가 CompleteActive를 쓴다 — 그쪽은 booking이 이미 지웠다.)
+	removed, err := a.rdb.ReleaseActive(c.Request.Context(), req.MovieID, req.RequestID, redis.ReasonComplete, time.Now().UnixMilli())
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return

@@ -10,7 +10,7 @@ import (
 
 // enterScript = 폴링 재설계 기준(백엔드서비스-올인원.md §1-1).
 // "정원 확인 → 입장 or 대기"를 원자 처리.
-//   KEYS[1]=active, KEYS[2]=waiting, KEYS[3]=waiting_lastseen
+//   KEYS[1]=active, KEYS[2]=waiting, KEYS[3]=waiting_lastseen, KEYS[4]=pending_events
 //   ARGV[1]=maxSessions, ARGV[2]=member(requestId), ARGV[3]=now(ms)
 // 반환(상태 1=active경로 / 2=waiting경로):
 //   {1,'ALREADY_ACTIVE', activeCount}         이미 입장 → 자리 유지(§1-1 새로고침 정책)
@@ -19,10 +19,13 @@ import (
 // 새로고침 정책(§1-1): active 재진입=유지 / waiting 재진입=꼬리로 밀기(ZREM+ZADD).
 // waiting 경로는 waiting·waiting_lastseen 둘 다 ZADD(생존 추적 시작, §1-4b).
 // baseline·processed 제거 — 폴링은 순번을 서버가 ZRANK로 직접 주므로 자가계산 불필요.
+// ADMITTED면 발행 대기 저널(pending_events)에도 같은 원자 실행 안에서 기록한다 —
+// active 등록과 "booking에 알릴 의무"가 갈라지지 않게(발행 전 즉사해도 저널이 남는다).
 var enterScript = goredis.NewScript(`
 local active = KEYS[1]
 local waiting = KEYS[2]
 local lastseen = KEYS[3]
+local pending = KEYS[4]
 local maxSessions = tonumber(ARGV[1])
 local member = ARGV[2]
 local now = tonumber(ARGV[3])
@@ -41,6 +44,7 @@ end
 local activeCount = redis.call('ZCARD', active)
 if activeCount < maxSessions then
   redis.call('ZADD', active, now, member)
+  redis.call('ZADD', pending, now, 'A|ENTER|' .. member)
   return {1, 'ADMITTED', activeCount + 1}
 else
   redis.call('ZADD', waiting, now, member)
@@ -60,7 +64,7 @@ type EnterResult struct {
 
 // Enter = enter Lua를 실행하고, 후처리로 영화를 추적 Set에 등록한다.
 func (c *Client) Enter(ctx context.Context, movieID, requestID string, maxSessions, now int64) (EnterResult, error) {
-	keys := []string{ActiveKey(movieID), WaitingKey(movieID), WaitingLastseenKey(movieID)}
+	keys := []string{ActiveKey(movieID), WaitingKey(movieID), WaitingLastseenKey(movieID), PendingKey(movieID)}
 	raw, err := enterScript.Run(ctx, c.rdb, keys, maxSessions, requestID, now).Result()
 	if err != nil {
 		return EnterResult{}, err

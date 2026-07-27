@@ -46,15 +46,19 @@ func (p *SessionTimeoutProcessor) processAll(ctx context.Context) {
 		return
 	}
 	// cutoff = now - timeout. score(입장시각)가 이보다 작거나 같으면 만료.
-	cutoff := time.Now().Add(-p.timeout).UnixMilli()
+	now := time.Now()
+	cutoff := now.Add(-p.timeout).UnixMilli()
 	for _, movieID := range movies {
-		expired, err := p.rdb.ExpireActive(ctx, movieID, cutoff)
+		// 만료와 동시에 회수 이벤트가 발행 대기 저널에 쌓인다. 실제 Kafka 발행은 스윕 루프가 한다
+		// (여기서 발행까지 하면 타임아웃 처리가 Kafka 가용성에 묶인다).
+		expired, err := p.rdb.ExpireActive(ctx, movieID, cutoff, now.UnixMilli())
 		if err != nil {
 			slog.WarnContext(ctx, "active 타임아웃 처리 실패", "movie", movieID, "err", err)
 			continue
 		}
 		if len(expired) > 0 {
-			slog.InfoContext(ctx, "active 타임아웃", "count", len(expired), "movie", movieID, "expired", expired)
+			// 만료 목록 전체를 로그에 싣지 않는다 — 한 틱 최대 1000건이라 로그가 폭증한다.
+			slog.InfoContext(ctx, "active 타임아웃", "count", len(expired), "movie", movieID)
 		}
 	}
 }

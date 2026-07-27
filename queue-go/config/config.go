@@ -19,6 +19,10 @@ type Config struct {
 	TimeoutInterval time.Duration // §1-4a active 만료 검사 주기 (기본 10초)
 	WaitingTimeout  time.Duration // §1-4b 폴링 끊긴 대기자 evict 임계(폴링 주기보다 넉넉히). 기본 30초.
 	WaitingInterval time.Duration // §1-4b waiting 만료 검사 주기 (기본 10초)
+	// SweepInterval = 발행 대기 저널 스윕 주기 (기본 5초). 발행이 끝나지 못한 상태 변경이
+	// booking에 도달하기까지의 최대 지연을 결정한다 — 짧을수록 회수가 빨리 반영되고,
+	// Redis ZRANGEBYSCORE 호출이 영화 수 × (1/주기)만큼 는다.
+	SweepInterval time.Duration
 	KafkaBroker     string        // 서비스간 통신(admissions·bookings-completed)
 	RedisPoolSize   int           // Redis 커넥션 풀 크기. 0=라이브러리 기본(10×GOMAXPROCS — automaxprocs 교정 후 CPU limit 기준). 값은 부하 실측으로 확정(설계서 1부 §1).
 	MetricsPort     string        // /metrics 전용 포트(§5-D 분리 결정). 인그레스·Service엔 안 물리고 ServiceMonitor만 안다.
@@ -39,6 +43,7 @@ func Load() Config {
 		TimeoutInterval: time.Duration(getenvInt("SESSION_CLEANUP_INTERVAL", 10000)) * time.Millisecond,
 		WaitingTimeout:  time.Duration(getenvInt("WAITING_TIMEOUT", 30)) * time.Second,
 		WaitingInterval: time.Duration(getenvInt("WAITING_CLEANUP_INTERVAL", 10000)) * time.Millisecond,
+		SweepInterval:   time.Duration(getenvInt("PENDING_SWEEP_INTERVAL", 5000)) * time.Millisecond,
 		KafkaBroker:     getenv("KAFKA_BROKER", "localhost:9092"),
 		RedisPoolSize:   int(getenvInt("REDIS_POOL_SIZE", 0)),
 		MetricsPort:     getenv("METRICS_PORT", "9091"),

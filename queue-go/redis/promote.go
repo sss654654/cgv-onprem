@@ -9,17 +9,21 @@ import (
 
 // promoteScript = 폴링 재설계 기준(백엔드서비스-올인원.md §1-3).
 // 대기열 앞에서 빈자리만큼 꺼내 active로 옮긴다(원자).
-//   KEYS[1]=waiting, KEYS[2]=active, KEYS[3]=promoted_count, KEYS[4]=waiting_lastseen
+//   KEYS[1]=waiting, KEYS[2]=active, KEYS[3]=promoted_count, KEYS[4]=waiting_lastseen,
+//   KEYS[5]=pending_events
 //   ARGV[1]=maxSessions(정원), ARGV[2]=batch(한 번에 승격 상한), ARGV[3]=now(ms)
 //   반환 = 승격된 requestId 목록
 // vacant(빈자리) 계산을 Lua 안에서(max − ZCARD(active)) → 초과승격 차단.
 // 승격 시 waiting·waiting_lastseen 둘 다 ZREM(§1-3 정합 규칙).
 // INCRBY promoted_count(rate·ETA용, §1-3) — SSE의 processed(자가계산용)와 다른 값.
+// 승격자는 발행 대기 저널(pending_events)에도 같은 원자 실행 안에서 남긴다 — 이 Lua가 끝난 뒤
+// 발행 전에 파드가 죽어도 승격자 명단이 Redis에 남아 다른 파드가 이어서 발행한다.
 var promoteScript = goredis.NewScript(`
 local waiting = KEYS[1]
 local active = KEYS[2]
 local promotedCount = KEYS[3]
 local lastseen = KEYS[4]
+local pending = KEYS[5]
 local maxSessions = tonumber(ARGV[1])
 local batch = tonumber(ARGV[2])
 local now = tonumber(ARGV[3])
@@ -37,6 +41,7 @@ for i = 1, #users do
   redis.call('ZREM', waiting, users[i])
   redis.call('ZREM', lastseen, users[i])
   redis.call('ZADD', active, now, users[i])
+  redis.call('ZADD', pending, now, 'A|PROMOTE|' .. users[i])
 end
 if #users > 0 then
   redis.call('INCRBY', promotedCount, #users)   -- rate·ETA 계산용 누적
@@ -47,7 +52,7 @@ return users
 // Promote = 정원 빈자리만큼 대기열 앞에서 승격. 승격된 requestId 목록 반환.
 // vacant는 Lua 안에서 계산(maxSessions − active) → 정원 초과 불가.
 func (c *Client) Promote(ctx context.Context, movieID string, maxSessions, batch, now int64) ([]string, error) {
-	keys := []string{WaitingKey(movieID), ActiveKey(movieID), PromotedCountKey(movieID), WaitingLastseenKey(movieID)}
+	keys := []string{WaitingKey(movieID), ActiveKey(movieID), PromotedCountKey(movieID), WaitingLastseenKey(movieID), PendingKey(movieID)}
 	raw, err := promoteScript.Run(ctx, c.rdb, keys, maxSessions, batch, now).Result()
 	if err != nil {
 		return nil, err
@@ -71,43 +76,8 @@ func (c *Client) Promote(ctx context.Context, movieID string, maxSessions, batch
 	return admitted, nil
 }
 
-// requeueFrontScript = Kafka 발행 실패 승격자의 보상 롤백(설계서 1부 §3-A "(b) 정직한 실패").
-// active에서 빼고 waiting "맨 앞"으로 되돌린다 — score 1,2,3…은 기존 score(ms 타임스탬프)보다
-// 항상 작아 절대 선두. 다음 성공 틱이 이들부터 재승격하므로 차례를 태우지 않는다.
-// promoted_count도 되돌린다(DECRBY) — 롤백된 승격이 rate를 부풀리지 않게.
-//   KEYS[1]=active, KEYS[2]=waiting, KEYS[3]=waiting_lastseen, KEYS[4]=promoted_count
-//   ARGV[1]=now(ms), ARGV[2..]=requestIds(배치 순서 유지)
-var requeueFrontScript = goredis.NewScript(`
-local n = #ARGV - 1
-for i = 2, #ARGV do
-  local m = ARGV[i]
-  redis.call('ZREM', KEYS[1], m)
-  redis.call('ZADD', KEYS[2], i - 1, m)
-  redis.call('ZADD', KEYS[3], tonumber(ARGV[1]), m)
-end
-if n > 0 then
-  redis.call('DECRBY', KEYS[4], n)
-end
-return n
-`)
-
-// RequeueFront = 발행 못 한 승격자들을 waiting 선두로 원자 복귀시킨다(승격 롤백).
-func (c *Client) RequeueFront(ctx context.Context, movieID string, requestIDs []string, now int64) error {
-	if len(requestIDs) == 0 {
-		return nil
-	}
-	keys := []string{ActiveKey(movieID), WaitingKey(movieID), WaitingLastseenKey(movieID), PromotedCountKey(movieID)}
-	argv := make([]interface{}, 0, len(requestIDs)+1)
-	argv = append(argv, now)
-	for _, id := range requestIDs {
-		argv = append(argv, id)
-	}
-	if err := requeueFrontScript.Run(ctx, c.rdb, keys, argv...).Err(); err != nil {
-		return err
-	}
-	// 대기자가 다시 생겼으니 추적 Set 복구(직전 promote 후처리에서 비었다고 SRem됐을 수 있음).
-	if err := c.rdb.SAdd(ctx, WaitingMoviesKey, movieID).Err(); err != nil {
-		slog.WarnContext(ctx, "requeue 후처리: waiting_movies 추적 등록 실패", "movie", movieID, "err", err)
-	}
-	return nil
-}
+// 발행 실패 시의 보상 롤백(승격자를 waiting 선두로 되돌리기)은 제거했다.
+// 롤백은 "발행 실패 = 브로커에 안 들어감"을 전제하는데, ctx 취소·타임아웃은 브로커 append
+// 이후에도 에러로 돌아온다 → booking엔 admitted가 들어갔는데 queue가 active를 되돌려
+// 정원 밖 입장자가 생긴다. 대신 발행 대기 저널(pending_events)에 남겨 두고 sweep이 재발행한다:
+// admissions 소비는 SADD라 멱등이므로 중복 발행은 무해하고, 유실만 막으면 된다.

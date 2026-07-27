@@ -5,19 +5,22 @@ import (
 	"log/slog"
 	"time"
 
+	"cgv-onprem/queue-go/kafka"
 	"cgv-onprem/queue-go/metrics"
 	"cgv-onprem/queue-go/redis"
 )
 
 // QueueProcessor = 주기적으로 대기자를 active로 승격하는 백그라운드 루프(§1-3).
-// [2-1] 로컬은 단일 인스턴스라 그냥 돎(멀티팟 리더선출은 2-2).
-// AdmissionPublisher = 승격 시 입장 이벤트를 서비스간(Kafka)으로 발행. main이 구현 주입.
+// AdmissionPublisher = 상태 변경을 서비스간(Kafka)으로 발행. main이 구현 주입.
+// 승격·입장은 admissions로, 회수는 admissions-revoked로 나간다.
 type AdmissionPublisher interface {
-	PublishAdmission(ctx context.Context, requestID, movieID string) error
+	PublishEvents(ctx context.Context, topic string, evs []kafka.Event) error
 }
 
 // promotePause = 발행 실패 후 승격을 쉬는 시간(설계서 1부 §3-A "승격 중단").
-// 틱마다 승격→실패→롤백을 반복하는 churn을 막고, 지나면 자동 재시도 = "회복 시 재개".
+// 틱마다 승격→실패를 반복하는 churn을 막고, 지나면 자동 재개 = "회복 시 재개".
+// 파드 로컬 변수가 아니라 Redis 키(TTL)로 둔다 — replica가 2 이상이면 로컬 변수로는
+// 다른 파드가 계속 승격해 중단이 부분적으로만 걸린다.
 const promotePause = 10 * time.Second
 
 type QueueProcessor struct {
@@ -27,7 +30,6 @@ type QueueProcessor struct {
 	batchSize   int64
 	publisher   AdmissionPublisher
 	rate        *metrics.RateTracker
-	pauseUntil  time.Time // 발행 실패 시 이 시각까지 승격 중단(루프 단일 고루틴만 접근 — 락 불필요)
 }
 
 func NewQueueProcessor(rdb *redis.Client, maxSessions int64, interval time.Duration, batchSize int64, publisher AdmissionPublisher, rate *metrics.RateTracker) *QueueProcessor {
@@ -53,7 +55,8 @@ func (p *QueueProcessor) Start(ctx context.Context) {
 
 func (p *QueueProcessor) processAll(ctx context.Context) {
 	// 발행 실패 직후엔 승격 자체를 쉰다(§3-A) — 대기열 보존, Kafka 회복 후 재개.
-	if time.Now().Before(p.pauseUntil) {
+	// 플래그가 Redis에 있어 전 파드가 같이 쉰다. 조회 실패는 승격을 막지 않는다(가용성 우선).
+	if paused, err := p.rdb.PromotePaused(ctx); err == nil && paused {
 		return
 	}
 	movies, err := p.rdb.ActiveQueueMovies(ctx)
@@ -79,34 +82,43 @@ func (p *QueueProcessor) processMovie(ctx context.Context, movieID string) {
 
 	admitted, err := p.rdb.Promote(ctx, movieID, p.maxSessions, p.batchSize, time.Now().UnixMilli())
 	if err != nil {
-		// RPC 오류면 Lua는 서버에서 이미 승격을 끝냈을 수 있다 — 그 경우 승격자 목록을 잃어
-		// 발행을 못 하고, 해당 유저는 booking 403 → 60s 타임아웃이 회수(알려진 한계로 수용,
-		// 설계서 1부 §3-D ③ — 완전 방어는 결과 저널링이라 규모 대비 과함. 로그로 흔적만).
-		slog.WarnContext(ctx, "processMovie 승격 실패(목록 유실 가능 — 60s 타임아웃이 회수)", "movie", movieID, "err", err)
+		// RPC 오류라도 Lua는 서버에서 이미 승격을 끝냈을 수 있다. 그 경우 승격자 명단은
+		// 발행 대기 저널(pending_events)에 같은 원자 실행으로 남아 있으므로, 목록을 여기서
+		// 잃어도 스윕 루프가 이어서 발행한다.
+		slog.WarnContext(ctx, "processMovie 승격 실패(저널에 남았으면 스윕이 발행)", "movie", movieID, "err", err)
+		return
+	}
+	if len(admitted) == 0 {
+		if p.rate != nil {
+			p.rate.Observe(movieID, 0, p.interval) // 0명도 관측(rate 감소 → ETA 현실화)
+		}
 		return
 	}
 
-	// 승격자마다 booking에게 입장 이벤트(Kafka admissions) 발행 — 안 하면 booking이 몰라 403.
-	// (SSE ADMISSION 방송은 폐기 — 클라가 폴링으로 ADMITTED 발견, §1-3.)
-	published := 0
-	if p.publisher == nil {
-		published = len(admitted) // 테스트 경로(발행자 미주입)
-	} else {
-		for i, requestID := range admitted {
-			if err := p.publisher.PublishAdmission(ctx, requestID, movieID); err != nil {
-				// (b) 정직한 실패(설계서 1부 §3-A): 발행 못 한 승격자(현재 포함 잔여)를
-				// waiting 선두로 되돌리고(차례 보존) 승격을 잠시 중단.
-				rollback := admitted[i:]
-				if rbErr := p.rdb.RequeueFront(ctx, movieID, rollback, time.Now().UnixMilli()); rbErr != nil {
-					// 롤백까지 실패(Redis도 이상) — 남은 방어는 60s 세션 타임아웃(자가치유).
-					slog.ErrorContext(ctx, "승격 롤백 실패", "movie", movieID, "count", len(rollback), "err", rbErr)
-				} else {
-					slog.WarnContext(ctx, "발행 실패 → 승격자 waiting 선두로 롤백·승격 중단", "count", len(rollback), "pause", promotePause, "movie", movieID)
-				}
-				p.pauseUntil = time.Now().Add(promotePause)
-				break
+	// 승격자에게 입장 이벤트(Kafka admissions)를 한 번에 발행 — 안 하면 booking이 몰라 403.
+	// 건별 발행은 Writer 배치 타이머를 건마다 기다려 배치가 통째로 느려진다.
+	published := len(admitted)
+	if p.publisher != nil {
+		evs := make([]kafka.Event, 0, len(admitted))
+		members := make([]string, 0, len(admitted))
+		for _, requestID := range admitted {
+			evs = append(evs, kafka.Event{RequestID: requestID, MovieID: movieID})
+			members = append(members, redis.PendingMember(redis.KindAdmit, redis.ReasonPromote, requestID))
+		}
+		if err := p.publisher.PublishEvents(ctx, kafka.TopicAdmissions, evs); err != nil {
+			// 정직한 실패(§3-A): 저널을 지우지 않고 남긴다 → 스윕이 재발행한다.
+			// 되돌리기(롤백)는 하지 않는다 — ctx 취소·타임아웃은 브로커 append 이후에도
+			// 에러로 오므로, 되돌리면 booking엔 입장이 들어갔는데 queue만 자리를 뺏는 상태가 된다.
+			// 승격은 잠시 멈춘다(전 파드 공통).
+			if pErr := p.rdb.SetPromotePause(ctx, promotePause); pErr != nil {
+				slog.ErrorContext(ctx, "승격 중단 플래그 설정 실패", "err", pErr)
 			}
-			published++
+			slog.WarnContext(ctx, "발행 실패 → 저널 보존·승격 중단", "count", len(admitted), "pause", promotePause, "movie", movieID)
+			published = 0
+		} else if err := p.rdb.ClearPending(ctx, movieID, members); err != nil {
+			// 발행은 됐는데 저널만 못 지웠다 — 스윕이 한 번 더 발행하지만
+			// booking의 admissions 소비는 SADD라 멱등이므로 무해하다.
+			slog.WarnContext(ctx, "저널 정리 실패(중복 발행 가능, 소비는 멱등)", "movie", movieID, "err", err)
 		}
 	}
 
@@ -114,8 +126,7 @@ func (p *QueueProcessor) processMovie(ctx context.Context, movieID string) {
 		slog.InfoContext(ctx, "승격·발행", "count", published, "movie", movieID)
 	}
 
-	// rate 관측(§1-3): 실제로 입장까지 완료(발행 성공)된 수만 반영 — 롤백분이 ETA를 부풀리지 않게.
-	// 0명 관측도 의미 있음(rate 감소 → ETA 현실화).
+	// rate 관측(§1-3): 실제로 발행까지 끝난 수만 반영 — 실패분이 ETA를 부풀리지 않게.
 	if p.rate != nil {
 		p.rate.Observe(movieID, published, p.interval)
 	}

@@ -49,12 +49,16 @@ func (c *kafkaHeaderCarrier) Keys() []string {
 
 const (
 	TopicAdmissions = "admissions"         // queue → booking (입장 승인)
+	TopicRevoked    = "admissions-revoked" // queue → booking (입장 회수: 세션 만료·이탈·자리반환)
 	TopicCompleted  = "bookings-completed" // booking → queue (자리 반환)
 )
 
 type Event struct {
 	RequestID string `json:"requestId"`
 	MovieID   string `json:"movieId"`
+	// Reason은 회수 이벤트에만 채운다(SESSION_TIMEOUT·LEAVE·COMPLETE). 입장 이벤트에선 빈 값.
+	// 소비 측은 이 필드가 없어도 동작해야 한다(omitempty — 기존 admissions 스키마와 호환).
+	Reason string `json:"reason,omitempty"`
 }
 
 // PublishFailures = 발행 최종 실패(내부 재시도 소진 후) 누적. ConsumeFailures = completed
@@ -74,10 +78,17 @@ type Producer struct{ w *kafkago.Writer }
 // 발행실패 처리(§3-A 정직한 실패)가 받는다. ctx = main의 루트 ctx — 종료 시 대기 중단.
 func NewProducer(ctx context.Context, broker string) *Producer {
 	go ensureTopic(ctx, broker, TopicAdmissions)
+	go ensureTopic(ctx, broker, TopicRevoked)
 	return &Producer{w: &kafkago.Writer{
-		Addr:                   kafkago.TCP(broker),
-		Topic:                  TopicAdmissions,
-		Balancer:               &kafkago.LeastBytes{},
+		Addr: kafkago.TCP(broker),
+		// Topic을 Writer에 고정하지 않는다 — 입장(admissions)과 회수(admissions-revoked)를
+		// 같은 Writer로 보내려면 메시지마다 Topic을 지정해야 한다.
+		//
+		// Balancer=Hash + Key=requestId: 같은 사용자의 이벤트는 항상 같은 파티션으로 간다.
+		// 입장과 회수가 다른 파티션에 흩어지면 소비 순서가 뒤집혀 "회수 → 입장" 순으로 처리될 수
+		// 있고, 그러면 이미 자리를 잃은 사용자의 인증이 되살아난다. 사용자 간에는 순서 의존이
+		// 없으므로 requestId 단위 분산이 파티션을 고르게 쓰면서 필요한 순서만 지킨다.
+		Balancer:               &kafkago.Hash{},
 		AllowAutoTopicCreation: true,
 		// RequiredAcks 기본값(RequireNone)은 브로커 확인 없이 성공 반환 — "발행 실패 처리"가
 		// 성립하려면 실패를 알아야 하므로 ack 필수.
@@ -87,6 +98,10 @@ func NewProducer(ctx context.Context, broker string) *Producer {
 		// 재시도 사이에 백오프를 둔다. 최악 지연 ≈ 1s×3 + 백오프 = 약 5s로,
 		// enter 경로의 서버 WriteTimeout(10s) 안쪽으로 묶인다.
 		WriteTimeout: time.Second,
+		// BatchTimeout 기본값은 1초다. 승격 루프가 1건씩 동기로 WriteMessages를 부르면
+		// 건마다 이 1초를 기다려 100명 승격에 약 100초가 걸린다. 배치 발행(PublishEvents)에
+		// 여러 건을 한 번에 넘기더라도, 마지막 부분 배치를 오래 붙들지 않도록 짧게 잡는다.
+		BatchTimeout: 10 * time.Millisecond,
 	}}
 }
 
@@ -94,21 +109,58 @@ func NewProducer(ctx context.Context, broker string) *Producer {
 // Writer 내부 재시도(MaxAttempts=3) 후에도 실패면 에러를 돌려준다. 그다음은 호출자의
 // 정직한 실패(§3-A): enter=보상 롤백+재시도 안내, 승격 루프=롤백+승격 일시 중단.
 func (p *Producer) PublishAdmission(ctx context.Context, requestID, movieID string) error {
+	return p.PublishEvents(ctx, TopicAdmissions, []Event{{RequestID: requestID, MovieID: movieID}})
+}
+
+// PublishRevoke = 입장 회수 통보. booking이 자기 admitted에서 그 사용자를 지운다.
+// reason은 SESSION_TIMEOUT·LEAVE·COMPLETE 중 하나(관측·디버깅용 — 소비 로직은 구분하지 않는다).
+func (p *Producer) PublishRevoke(ctx context.Context, requestID, movieID, reason string) error {
+	return p.PublishEvents(ctx, TopicRevoked, []Event{{RequestID: requestID, MovieID: movieID, Reason: reason}})
+}
+
+// PublishEvents = 같은 토픽으로 여러 이벤트를 한 번의 WriteMessages 호출로 보낸다.
+// 건별 호출은 메시지마다 Writer의 배치 타이머를 기다려 승격 배치가 통째로 느려진다.
+// 부분 실패는 없다 — WriteMessages는 전부 성공하거나 에러를 돌려준다. 호출자는 실패 시
+// 발행 대기 저널을 지우지 않고 남겨 다음 스윕이 재발행하게 한다.
+func (p *Producer) PublishEvents(ctx context.Context, topic string, evs []Event) error {
+	if len(evs) == 0 {
+		return nil
+	}
 	// trace(§7): 발행 span을 열고 W3C traceparent를 Kafka 헤더에 inject.
 	//   enter 경로는 ctx에 HTTP 서버 span이 있어 그 자식으로, 승격 루프는 background(span 없음)라
 	//   여기서 뜨는 span이 새 루트가 된다 — 두 발행 지점 모두 유효한 traceparent를 싣는다.
-	ctx, span := otel.Tracer("queue-kafka").Start(ctx, "publish admissions")
+	ctx, span := otel.Tracer("queue-kafka").Start(ctx, "publish "+topic)
 	defer span.End()
 
-	b, _ := json.Marshal(Event{RequestID: requestID, MovieID: movieID})
 	var carrier kafkaHeaderCarrier
 	otel.GetTextMapPropagator().Inject(ctx, &carrier)
-	err := p.w.WriteMessages(ctx, kafkago.Message{Value: b, Headers: []kafkago.Header(carrier)})
+
+	msgs := make([]kafkago.Message, 0, len(evs))
+	for _, e := range evs {
+		b, err := json.Marshal(e)
+		if err != nil {
+			// 직렬화가 실패하는 값은 재시도해도 같다 — 배치 전체를 막지 않게 건너뛴다.
+			slog.ErrorContext(ctx, "이벤트 직렬화 실패", "topic", topic, "req", e.RequestID, "err", err)
+			continue
+		}
+		msgs = append(msgs, kafkago.Message{
+			Topic: topic,
+			// Key = requestId. 같은 사용자의 입장·회수가 같은 파티션에서 순서대로 처리된다.
+			Key:     []byte(e.RequestID),
+			Value:   b,
+			Headers: []kafkago.Header(carrier),
+		})
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	err := p.w.WriteMessages(ctx, msgs...)
 	if err != nil {
-		n := PublishFailures.Add(1)
-		slog.ErrorContext(ctx, "admissions 발행 실패", "count", n, "req", requestID, "movie", movieID, "err", err)
+		n := PublishFailures.Add(int64(len(msgs)))
+		slog.ErrorContext(ctx, "발행 실패", "topic", topic, "batch", len(msgs), "total_failures", n, "err", err)
 	} else {
-		slog.InfoContext(ctx, "admissions 발행", "req", requestID, "movie", movieID)
+		slog.InfoContext(ctx, "발행", "topic", topic, "batch", len(msgs))
 	}
 	return err
 }

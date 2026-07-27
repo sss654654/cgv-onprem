@@ -79,6 +79,10 @@ func main() {
 	bg("queue-processor", processor.NewQueueProcessor(rdb, cfg.MaxSessions, cfg.QueueInterval, cfg.BatchSize, kp, rate).Start)
 	bg("session-timeout", processor.NewSessionTimeoutProcessor(rdb, cfg.SessionTimeout, cfg.TimeoutInterval).Start)
 	bg("waiting-timeout", processor.NewWaitingTimeoutProcessor(rdb, cfg.WaitingTimeout, cfg.WaitingInterval).Start)
+	// 발행 대기 저널 스윕 — 상태는 바뀌었는데 Kafka 발행이 끝나지 못한 것을 다시 내보낸다.
+	// 이게 없으면 승격/입장 직후 파드가 죽거나 발행이 실패한 건이 영원히 booking에 안 알려진다.
+	// grace 6s = enter 경로 발행 상한과 같은 급(발행 중인 건을 스윕이 가로채지 않게).
+	bg("pending-sweep", processor.NewPendingSweeper(rdb, kp, cfg.SweepInterval, 6*time.Second, 500).Start)
 	// 상태 게이지 샘플러(waiting·active·rate·풀 — §7-B 행2·행4). 5s = 폴링 최대 주기와 같은 급.
 	bg("metrics-sampler", func(c context.Context) { metrics.StartSampler(c, rdb, rate, 5*time.Second) })
 
