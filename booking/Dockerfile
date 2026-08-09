@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # booking(Java/Spring) 멀티스테이지 — Maven 빌드 → JRE 런타임.
 # 풋프린트 주의(§3-3): JVM은 무겁다 → 컨테이너 인식 옵션으로 힙 제한. 2-2에서 GraalVM/AppCDS 검토.
 FROM maven:3.9-eclipse-temurin-21 AS build
@@ -7,9 +8,12 @@ WORKDIR /app
 #   힙으로 잡는데, 러너가 도는 VM 상한(6GB) 기준이라 1.5GB까지 커진다.
 ENV MAVEN_OPTS="-Xmx768m"
 COPY pom.xml .
-RUN mvn -q -B dependency:go-offline
+# --mount=type=cache: 내려받은 라이브러리를 레이어가 아니라 빌더가 따로 들고 있는 저장소에 둔다.
+#   레이어 캐시만 있으면 pom.xml 이 한 글자만 바뀌어도 아래가 전부 무효가 되어 처음부터 다시
+#   받는다. 이 마운트는 그때도 남아 있어 바뀐 것만 받는다.
+RUN --mount=type=cache,target=/root/.m2 mvn -q -B dependency:go-offline
 COPY src ./src
-RUN mvn -q -B clean package -DskipTests
+RUN --mount=type=cache,target=/root/.m2 mvn -q -B clean package -DskipTests
 
 FROM eclipse-temurin:21-jre
 WORKDIR /app

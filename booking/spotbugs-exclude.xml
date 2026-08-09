@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+
+    <!-- EI_EXPOSE_REP  : 필드로 들고 있는 가변 객체를 그대로 반환한다
+         EI_EXPOSE_REP2 : 밖에서 받은 가변 객체를 그대로 필드에 저장한다
+
+         생성자 주입으로 받은 스프링 빈(ObjectMapper · MeterRegistry ·
+         StringRedisTemplate · KafkaTemplate · @ConfigurationProperties)이 전부 여기
+         걸린다. 이 객체들은 컨테이너가 관리하는 싱글턴이라 방어적 복사가 성립하지 않는다.
+         요청·응답 DTO(record)가 List 를 담는 경우도 같은 패턴으로 걸린다.
+
+         제외 대상은 이 두 패턴뿐이고, 나머지 Medium 이상은 그대로 실패로 본다. -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    </Match>
+
+</FindBugsFilter>

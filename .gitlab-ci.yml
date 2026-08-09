@@ -1,0 +1,271 @@
+# 데스크탑의 gitlab-runner(docker executor)가 실행한다. 러너에 호스트 Docker
+# 소켓이 마운트돼 있어 이미지 빌드는 데스크탑 데몬이 한다.
+
+# ═══════════════════════════════════════════════ 설정
+
+# 파이프라인을 아예 만들지 말지를 정한다. job 의 rules 보다 한 층 위다.
+#
+# push 한 번이 GitLab 안에서 사건 둘이 된다.
+#   "브랜치에 새 커밋이 왔다"        →  브랜치 파이프라인
+#   "MR 의 소스 브랜치가 바뀌었다"    →  MR 파이프라인   (MR 이 열려 있을 때만)
+# 사건마다 따로 판단하므로, MR 이 열린 브랜치에 push 하면 같은 커밋을 두 번 돌린다.
+#
+# 위에서부터 보다가 처음 맞는 줄에서 멈춘다. 아무 줄에도 안 걸리면 안 만든다.
+workflow:
+  rules:
+    # MR 사건이면 만든다. 머지해도 되는지 판정하는 것이라 이쪽을 남긴다.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # 브랜치 push 인데 그 브랜치에 열린 MR 이 있으면 만들지 않는다. 위에서 이미 만들었다.
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    # MR 이 없는 브랜치는 이 줄로 돈다. 이 줄이 없으면 MR 열기 전에 아무것도 안 돈다.
+    - if: $CI_COMMIT_BRANCH
+
+# build 가 만든 이미지는 job 컨테이너가 아니라 데스크탑 데몬에 남는다. 그래서
+# scan 과 publish 가 다른 job 인데도 같은 이름($SVC:$TAG)으로 그 이미지를 이어받는다.
+# dind 였으면 job 마다 데몬이 새것이라 이 분리가 성립하지 않는다.
+stages:
+  - check      # 코드를 훑는다. 여기서 걸리면 뒤로 안 간다
+  - test       # 단위 테스트. 11부에서 채운다
+  - build      # 이미지를 만든다. 올리지는 않는다
+  - scan       # 방금 만든 이미지의 취약점을 훑는다
+  - publish    # 스캔까지 통과한 것을 레지스트리로. dev 에서만 생긴다
+
+default:
+  tags:
+    - docker   # 러너에 붙인 이름표. 지목해야 그 러너가 가져간다
+  # 같은 브랜치에 새 커밋이 오면 돌던 파이프라인을 취소한다. 옛 커밋의 결과는 볼 이유가
+  # 없는데 슬롯 두 개를 계속 잡고 있다. 이미지를 올리는 publish 는 이 대상에서 뺀다.
+  interruptible: true
+  # 프로젝트 기본값은 1시간이다. 멈춘 job 이 그동안 슬롯을 잡는다.
+  # 이미지 스캔이 취약점 DB 를 새로 받는 판을 덮을 만큼은 남긴다(TRIVY_TIMEOUT 20분).
+  timeout: 30m
+
+variables:
+  # 같은 이름을 다시 쓰지 않아 노드의 이미지 캐시가 애초에 맞지 않는다.
+  # 번호로 순서를 읽고 해시로 어느 커밋인지 찾는다. 예: dev-42-a1b2c3d
+  TAG: $CI_COMMIT_REF_SLUG-$CI_PIPELINE_IID-$CI_COMMIT_SHORT_SHA
+
+# ═══════════════════════════════════════════════ job
+#
+#   check     secret-scan · dep-scan:queue-go · lint:{queue-go,booking}   서로 독립이라 같은 stage
+#     ↓
+#   test      (비어 있다)                              11부에서 채운다
+#     ↓
+#   build     build:{queue-go,booking,frontend}       바뀐 서비스만 생긴다
+#     ↓
+#   scan      scan:{...}                              build 가 만든 이미지를 훑는다
+#     ↓
+#   publish   publish:{...}                           dev 브랜치에서만 생긴다
+
+# ── check ─────────────────────────────────────────────
+# 커밋에 자격이 섞여 들어갔는지 훑는다. 한 번 들어가면 지워도 히스토리에 남아
+# 되돌릴 수 없으므로 가장 먼저, 어떤 커밋에서든 돈다.
+secret-scan:
+  stage: check
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]   # 이 이미지는 gitleaks 를 바로 실행하게 돼 있다. job 이 명령을 넣으려면 비운다
+  variables:
+    GIT_DEPTH: 0       # 기본은 얕은 clone 이라 과거 커밋이 안 온다. 히스토리 전체를 받는다
+  script:
+    - gitleaks detect --source . --no-banner --redact   # redact = 찾은 값을 로그에 안 찍는다
+
+# 선언된 의존성을 훑는다. build 전에 끝나므로 이미지 스캔과 같은 결함을 더 싸게 잡는다.
+# 대상이 queue-go 하나인 이유:
+#   go.sum 은 간접 의존까지 버전이 전부 파일에 적혀 있어 원격 조회 없이 판정된다.
+#   pom.xml 은 반대로 버전을 부모 POM 이 정해서, 읽으려면 Maven Central 에 물어야 한다.
+#   그 조회가 429(Too Many Requests)로 막혀 job 이 결과를 못 내고 죽었다. Java 쪽은
+#   scan:booking 이 app.jar 를 직접 읽는데, 무엇이 실제로 담겼는지를 보므로 pom.xml
+#   추정보다 정확하다.
+#
+# 저장소 전체가 아니라 경로를 지정해도 되는 것은, 여기 관심사가 "선언된 의존성" 하나라서다.
+dep-scan:queue-go:
+  stage: check
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  variables:
+    TRIVY_NO_PROGRESS: "true"
+    TRIVY_CACHE_DIR: /root/.cache/trivy/$CI_JOB_NAME
+  script:
+    - trivy fs --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 ./queue-go
+
+# Go 표준 도구. 컴파일은 되지만 의도와 다르게 도는 자리를 잡는다.
+lint:queue-go:
+  stage: check
+  image: golang:1.26
+  script:
+    - cd queue-go
+    - go vet ./...
+  rules:
+    - changes:
+        - queue-go/**/*
+        - .gitlab-ci.yml
+
+# SpotBugs 는 소스가 아니라 컴파일된 바이트코드를 훑는다. 그래서 compile 이 먼저다.
+# 플러그인 선언은 booking/pom.xml 에 있다.
+lint:booking:
+  stage: check
+  image: maven:3.9-eclipse-temurin-21
+  variables:
+    # JVM 은 힙 상한을 안 주면 컨테이너가 보는 메모리의 25% 를 잡는다. job 컨테이너에
+    # 메모리 제한이 없어 VM 전체(7.8GB)를 보므로 혼자 2GB 가까이 쓴다. 동시 실행 슬롯을
+    # 늘리면 그만큼 곱해진다. booking/Dockerfile 의 빌드 스테이지와 같은 값으로 맞춘다.
+    MAVEN_OPTS: "-Xmx768m"
+  script:
+    - cd booking
+    - mvn -B compile spotbugs:check
+  # 콘솔에는 개수만 남는다. 어느 파일 몇 줄인지는 이 리포트에 있다.
+  # when: always — 실패했을 때야말로 받아 봐야 하므로.
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - booking/target/spotbugsXml.xml
+  rules:
+    - changes:
+        - booking/**/*
+        - .gitlab-ci.yml
+
+# ── build · scan · publish ────────────────────────────
+# 같은 서비스의 세 job 이 같은 경로 규칙을 공유한다 — 안 바뀐 서비스는 셋이 함께 안 생긴다.
+# .gitlab-ci.yml 이 목록에 있는 것은, CI 파일만 고친 커밋에서 job 이 하나도 안 생기면
+# 고친 게 도는지 확인할 방법이 없어서다.
+
+build:queue-go:
+  extends: .build
+  variables:
+    SVC: queue-go
+  rules:
+    - changes:
+        - queue-go/**/*
+        - .gitlab-ci.yml
+
+scan:queue-go:
+  extends: .scan
+  variables:
+    SVC: queue-go
+  rules:
+    - changes:
+        - queue-go/**/*
+        - .gitlab-ci.yml
+
+publish:queue-go:
+  extends: .publish
+  variables:
+    SVC: queue-go
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+      changes:
+        - queue-go/**/*
+        - .gitlab-ci.yml
+
+build:booking:
+  extends: .build
+  variables:
+    SVC: booking
+  rules:
+    - changes:
+        - booking/**/*
+        - .gitlab-ci.yml
+
+scan:booking:
+  extends: .scan
+  variables:
+    SVC: booking
+  rules:
+    - changes:
+        - booking/**/*
+        - .gitlab-ci.yml
+
+publish:booking:
+  extends: .publish
+  variables:
+    SVC: booking
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+      changes:
+        - booking/**/*
+        - .gitlab-ci.yml
+
+build:frontend:
+  extends: .build
+  variables:
+    SVC: frontend
+  rules:
+    - changes:
+        - frontend/**/*
+        - .gitlab-ci.yml
+
+scan:frontend:
+  extends: .scan
+  variables:
+    SVC: frontend
+  rules:
+    - changes:
+        - frontend/**/*
+        - .gitlab-ci.yml
+
+publish:frontend:
+  extends: .publish
+  variables:
+    SVC: frontend
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+      changes:
+        - frontend/**/*
+        - .gitlab-ci.yml
+
+# ═══════════════════════════════════════════════ 틀
+# 점으로 시작하면 job 이 아니다. 실행되지 않고 extends 로 가져다 쓰기만 한다.
+
+# dependencies: [] — 앞 stage 의 아티팩트를 안 받는다. 기본값은 "앞 stage 전부에서 받는다"라
+# lint:booking 의 SpotBugs 리포트가 build·scan·publish 로 따라다녔다. 받을 때마다
+# booking/target/ 을 지우고 다시 풀어서, 쓰지도 않는 파일에 시간을 쓴다.
+.build:
+  stage: build
+  image: docker:27-cli   # 등록 기본값 alpine 엔 docker 명령이 없다. CLI 만 든 이미지
+  dependencies: []
+  script:
+    # --pull: 베이스 이미지를 매번 레지스트리에서 확인한다. 같은 태그라도 업스트림은
+    # 패치를 넣어 다시 빌드해 두는데, 로컬 캐시가 있으면 낡은 것으로 빌드된다.
+    # frontend 스캔의 HIGH 31 · CRITICAL 2 가 전부 이렇게 낡은 alpine 패키지였다.
+    - docker build --pull -t "$CI_REGISTRY_IMAGE/$SVC:$TAG" "./$SVC"
+
+.scan:
+  stage: scan
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  dependencies: []
+  variables:
+    # 취약점 DB 내려받기 진행바를 로그에 안 찍는다. 갱신 한 줄이 수백 줄로 늘어나
+    # 결과 표가 로그 뒤로 밀린다.
+    TRIVY_NO_PROGRESS: "true"
+    # trivy 는 캐시 디렉터리에 배타 잠금을 건다. 러너 볼륨 하나를 세 scan job 이
+    # 그대로 공유하면 먼저 잡은 하나만 돌고 나머지는 "cache may be in use by another
+    # process" 로 죽는다. job 이름으로 하위 폴더를 갈라 잠금이 안 겹치게 한다.
+    # 폴더는 갈라도 볼륨은 하나라 각 job 의 DB 는 판을 넘어 그대로 남는다.
+    TRIVY_CACHE_DIR: /root/.cache/trivy/$CI_JOB_NAME
+    # 기본 제한은 5분이고, 그 안에 DB 내려받기까지 들어간다. Java DB 는 903MB 라
+    # 캐시가 비었거나 만료(3일)된 판에서는 내려받기만으로 제한을 넘긴다. 그러면
+    # 취약점 유무와 무관하게 "context deadline exceeded" 로 죽는다.
+    TRIVY_TIMEOUT: 20m
+  script:
+    # 수정 가능한(패치가 나온) HIGH 이상만 실패로 본다. 못 고치는 것으로 막으면
+    # 파이프라인이 영구히 빨간불이 되고 결국 게이트를 끄게 된다.
+    - trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$CI_REGISTRY_IMAGE/$SVC:$TAG"
+
+.publish:
+  stage: publish
+  image: docker:27-cli
+  dependencies: []
+  # push 중간에 끊기면 레지스트리에 레이어가 일부만 올라간 상태로 남는다.
+  interruptible: false
+  before_script:
+    # job 마다 발급되고 끝나면 폐기되는 토큰. -p 로 주면 명령줄 인자에 남는다.
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  # CI_REGISTRY_IMAGE = <레지스트리 주소>/<그룹>/<프로젝트>. GitLab 이 채운다.
+  script:
+    - docker push "$CI_REGISTRY_IMAGE/$SVC:$TAG"
