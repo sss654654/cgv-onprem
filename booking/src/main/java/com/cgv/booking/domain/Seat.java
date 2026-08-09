@@ -2,8 +2,8 @@ package com.cgv.booking.domain;
 
 import jakarta.persistence.*;
 
-// 좌석(seat) = 회차의 좌석 구조(단일 진실원). 화면 격자는 이걸 그대로 렌더 → "200인데 48칸" 불가(§3-1-8).
-// status 컬럼 없음 — "판매완료"는 booking_seats 행 존재로 판정(§3-1-8). 여기는 구조만.
+// 좌석(seat) = 회차의 좌석 구조(단일 진실원). 화면 격자는 이걸 그대로 렌더 → "200인데 48칸" 불가.
+// status 컬럼 없음 — "판매완료"는 booking_seats 행 존재로 판정. 여기는 구조만.
 @Entity
 @Table(name = "seats",
         uniqueConstraints = @UniqueConstraint(columnNames = {"screening_id", "seat_no"}))

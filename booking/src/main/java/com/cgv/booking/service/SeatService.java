@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-// 좌석도 조회(§3-1-2) + 좌석 점유(§3-1-3).
+// 좌석도 조회 + 좌석 점유.
 // 좌석 상태 3개(빈/임시점유=Redis/판매완료=MySQL) → 화면엔 taken 불린으로 합쳐 전달.
 @Service
 public class SeatService {
@@ -53,7 +53,7 @@ public class SeatService {
                 .toList();
     }
 
-    // 좌석 점유(§3-1-3): 게이트 → 좌석 검증 → SET NX(다중=Lua all-or-nothing). 실패=409.
+    // 좌석 점유: 게이트 → 좌석 검증 → SET NX(다중=Lua all-or-nothing). 실패=409.
     public void select(String screeningId, List<String> rawSeatNos, String requestId) {
         String movieId = movieIdOf(screeningId);
         List<String> seatNos = seatRequest.normalize(rawSeatNos);
@@ -68,7 +68,7 @@ public class SeatService {
         if (!ok) throw ApiException.conflict("이미 선점된 좌석이 있습니다.");
     }
 
-    // 뒤로가기/취소 — 내 점유 해제(§3-1-3, 3-4 네비게이션).
+    // 뒤로가기/취소 — 내 점유 해제.
     // 실재·판매 검증은 하지 않는다 — 해제는 "내 값인 키만 DEL"이라 남에게 영향이 없고,
     // 회수는 항상 열려 있어야 유령 점유가 TTL까지 남지 않는다. 개수 상한만 적용한다.
     public void release(String screeningId, List<String> rawSeatNos, String requestId) {

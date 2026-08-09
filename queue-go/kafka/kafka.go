@@ -17,7 +17,7 @@ import (
 )
 
 // kafkaHeaderCarrier = OTel TextMapCarrier를 kafka-go 메시지 헤더에 어댑트.
-// W3C traceparent를 헤더로 주고받아 producer(booking·queue)→consumer trace를 잇는다(§7).
+// W3C traceparent를 헤더로 주고받아 producer(booking·queue)→consumer trace를 잇는다.
 type kafkaHeaderCarrier []kafkago.Header
 
 func (c *kafkaHeaderCarrier) Get(key string) string {
@@ -63,7 +63,7 @@ type Event struct {
 
 // PublishFailures = 발행 최종 실패(내부 재시도 소진 후) 누적. ConsumeFailures = completed
 // 처리 실패(미커밋) 누적. 단일 진실원은 이 atomic이고, promauto CounterFunc가 이 값을 그대로
-// 읽어 queue_kafka_publish/consume_failures_total로 노출한다(설계서 1부 §7-B 행3).
+// 읽어 queue_kafka_publish/consume_failures_total로 노출한다.
 var (
 	PublishFailures atomic.Int64
 	ConsumeFailures atomic.Int64
@@ -72,10 +72,10 @@ var (
 // Producer = "admissions" 발행. 승격 시 호출 → booking이 admitted set을 채운다.
 type Producer struct{ w *kafkago.Writer }
 
-// NewProducer는 즉시 반환한다(기동 비동기화 — 설계서 1부 §2-B).
+// NewProducer는 즉시 반환한다(기동 비동기화).
 // 토픽 보장(ensureTopic)은 백그라운드로 뺐다: Kafka가 늦게 떠도 HTTP 포트는 열린다.
 // 첫 발행은 AllowAutoTopicCreation + Writer 내부 재시도가 받치고, 그래도 실패하면
-// 발행실패 처리(§3-A 정직한 실패)가 받는다. ctx = main의 루트 ctx — 종료 시 대기 중단.
+// 발행실패 처리가 받는다. ctx = main의 루트 ctx — 종료 시 대기 중단.
 func NewProducer(ctx context.Context, broker string) *Producer {
 	go ensureTopic(ctx, broker, TopicAdmissions)
 	go ensureTopic(ctx, broker, TopicRevoked)
@@ -93,7 +93,7 @@ func NewProducer(ctx context.Context, broker string) *Producer {
 		// RequiredAcks 기본값(RequireNone)은 브로커 확인 없이 성공 반환 — "발행 실패 처리"가
 		// 성립하려면 실패를 알아야 하므로 ack 필수.
 		RequiredAcks: kafkago.RequireOne,
-		MaxAttempts:  3, // 짧은 재시도(§3-A ①) — 몇 초 순단은 여기서 흡수
+		MaxAttempts:  3, // 짧은 재시도 — 몇 초 순단은 여기서 흡수
 		// WriteTimeout은 "시도당" 상한이다 — kafka-go는 시도마다 새 타임아웃을 만들고
 		// 재시도 사이에 백오프를 둔다. 최악 지연 ≈ 1s×3 + 백오프 = 약 5s로,
 		// enter 경로의 서버 WriteTimeout(10s) 안쪽으로 묶인다.
@@ -107,7 +107,7 @@ func NewProducer(ctx context.Context, broker string) *Producer {
 
 // PublishAdmission — processor·handler의 AdmissionPublisher 인터페이스를 만족.
 // Writer 내부 재시도(MaxAttempts=3) 후에도 실패면 에러를 돌려준다. 그다음은 호출자의
-// 정직한 실패(§3-A): enter=보상 롤백+재시도 안내, 승격 루프=롤백+승격 일시 중단.
+// 정직한 실패: enter=보상 롤백+재시도 안내, 승격 루프=롤백+승격 일시 중단.
 func (p *Producer) PublishAdmission(ctx context.Context, requestID, movieID string) error {
 	return p.PublishEvents(ctx, TopicAdmissions, []Event{{RequestID: requestID, MovieID: movieID}})
 }
@@ -126,7 +126,7 @@ func (p *Producer) PublishEvents(ctx context.Context, topic string, evs []Event)
 	if len(evs) == 0 {
 		return nil
 	}
-	// trace(§7): 발행 span을 열고 W3C traceparent를 Kafka 헤더에 inject.
+	// trace: 발행 span을 열고 W3C traceparent를 Kafka 헤더에 inject.
 	//   enter 경로는 ctx에 HTTP 서버 span이 있어 그 자식으로, 승격 루프는 background(span 없음)라
 	//   여기서 뜨는 span이 새 루트가 된다 — 두 발행 지점 모두 유효한 traceparent를 싣는다.
 	ctx, span := otel.Tracer("queue-kafka").Start(ctx, "publish "+topic)
@@ -213,7 +213,7 @@ func tryCreateTopic(broker, topic string) error {
 // ConsumeCompleted = "bookings-completed" 소비 → queue active에서 제거(자리 반환).
 // booking이 예매 끝내면 이 이벤트가 와서 ③ 승격이 다음 대기자를 채운다.
 //
-// at-least-once(설계서 1부 §3-B, 필수 7): ReadMessage(받자마자 커밋 = 처리 전 죽으면
+// at-least-once: ReadMessage(받자마자 커밋 = 처리 전 죽으면
 // 영구 유실)를 버리고 FetchMessage → 처리 성공 → CommitMessages(처리 후 커밋)로.
 // 대가인 중복 재처리는 무해 — CompleteActive는 ZREM 한 줄이라 멱등.
 func ConsumeCompleted(ctx context.Context, broker string, rdb *redis.Client) {
@@ -235,7 +235,7 @@ func ConsumeCompleted(ctx context.Context, broker string, rdb *redis.Client) {
 			time.Sleep(time.Second) // 백오프 — 브로커 장애 시 tight loop 방지
 			continue
 		}
-		// trace(§7): completed 헤더에서 W3C 컨텍스트를 extract해 producer(booking) trace에
+		// trace: completed 헤더에서 W3C 컨텍스트를 extract해 producer(booking) trace에
 		//   이어지는 consume span을 연다. IIFE+defer로 감싸 처리·커밋 규약(at-least-once)은 그대로 둔다.
 		func() {
 			carrier := kafkaHeaderCarrier(m.Headers)

@@ -2,7 +2,7 @@ package com.cgv.booking.kafka;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
-// queue ↔ booking 공용 메시지 형식 (§2-4, §3-1-3).
+// queue ↔ booking 공용 메시지 형식.
 //   admissions          queue→booking : 입장 승인  {requestId, movieId}
 //   admissions-revoked  queue→booking : 입장 회수  {requestId, movieId, reason}
 //   bookings-completed  booking→queue : 자리 반환  {requestId, movieId}

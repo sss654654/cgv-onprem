@@ -6,7 +6,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 )
 
-// expireScript = active에서 score(=입장시각ms) ≤ cutoff 인 멤버를 찾아 제거(원자, §1-4a).
+// expireScript = active에서 score(=입장시각ms) ≤ cutoff 인 멤버를 찾아 제거(원자).
 // ZSet 멤버엔 개별 TTL을 못 거니, score를 직접 스캔해 수동 만료한다.
 // 제거와 동시에 회수 이벤트를 발행 대기 저널에 남긴다 — active에서 빠진 사람의 admitted가
 // booking에 그대로 남으면 정원 밖 사용자가 계속 예매 API를 통과한다.
@@ -37,8 +37,8 @@ func (c *Client) ExpireActive(ctx context.Context, movieID string, cutoff, now i
 	return toStrings(raw), nil
 }
 
-// waitingExpireScript = 폴링 타임아웃(§1-4b). 마지막 폴링(lastseen) ≤ cutoff 인 대기자를
-// waiting·waiting_lastseen 둘 다에서 제거(원자, §1-3 정합 규칙).
+// waitingExpireScript = 폴링 타임아웃. 마지막 폴링(lastseen) ≤ cutoff 인 대기자를
+// waiting·waiting_lastseen 둘 다에서 제거(원자 — 두 키 정합 규칙).
 //   KEYS[1]=waiting, KEYS[2]=waiting_lastseen, ARGV[1]=cutoff(ms)
 //   반환 = evict된 requestId 목록
 var waitingExpireScript = goredis.NewScript(`

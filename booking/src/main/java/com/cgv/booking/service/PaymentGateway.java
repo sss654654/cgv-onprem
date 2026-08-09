@@ -2,7 +2,7 @@ package com.cgv.booking.service;
 
 import org.springframework.stereotype.Service;
 
-// PG(결제대행사) mock — §3-1-5. 실제 결제사 안 붙이고 "승인됨" 흉내.
+// PG(결제대행사) mock. 실제 결제사 안 붙이고 "승인됨" 흉내.
 // "여기가 동기 경계"라는 구조만 보임. 보상(환불) 호출도 mock으로 받음.
 @Service
 public class PaymentGateway {
@@ -13,7 +13,7 @@ public class PaymentGateway {
         return "PAY-" + idempotencyKey;
     }
 
-    // 보상(환불) — DB 커밋 실패 등으로 예매 못 만들면 돈 되돌림(§3-1-6 보상).
+    // 보상(환불) — DB 커밋 실패 등으로 예매 못 만들면 돈 되돌림.
     public void refund(String paymentId) {
         // 실제라면 PG 취소 API 호출(멱등). mock은 no-op 로그 수준.
     }

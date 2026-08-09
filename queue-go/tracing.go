@@ -13,12 +13,12 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// initTracer = OTel TracerProvider 초기화(§7 trace). OTLP/gRPC로 span을 OTLP_GRPC_ENDPOINT
+// initTracer = OTel TracerProvider 초기화. OTLP/gRPC로 span을 OTLP_GRPC_ENDPOINT
 // (기본 localhost:4317)로 내보내고, W3C TraceContext propagator를 전역 등록한다 — booking·
 // Kafka와 같은 전파 포맷이라야 서비스 경계를 넘어 하나의 trace로 이어진다.
 // env명은 OTLP_GRPC_ENDPOINT — booking(OTLP/HTTP, 4318/v1/traces, OTLP_HTTP_ENDPOINT)과
 // 프로토콜·포트가 달라 env를 분리한다(공유 시 한쪽이 깨짐).
-// exporter는 lazy 연결(비블로킹)이라 Tempo가 늦게 떠도 기동을 막지 않는다(§2-B).
+// exporter는 lazy 연결(비블로킹)이라 Tempo가 늦게 떠도 기동을 막지 않는다.
 // 반환값 shutdown은 graceful 종료 때 버퍼 span flush + exporter 종료에 쓴다.
 func initTracer(ctx context.Context) (func(context.Context) error, error) {
 	endpoint := os.Getenv("OTLP_GRPC_ENDPOINT")
@@ -31,7 +31,7 @@ func initTracer(ctx context.Context) (func(context.Context) error, error) {
 
 	exp, err := otlptracegrpc.New(ctx,
 		otlptracegrpc.WithEndpoint(endpoint),
-		otlptracegrpc.WithInsecure(), // 온프렘 내부망 — 평문 gRPC(§5)
+		otlptracegrpc.WithInsecure(), // 온프렘 내부망 — 평문 gRPC
 	)
 	if err != nil {
 		return nil, err

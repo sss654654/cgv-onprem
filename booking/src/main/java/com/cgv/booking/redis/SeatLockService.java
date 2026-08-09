@@ -11,7 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-// 좌석 임시점유(§3-1-3) — string 키 seat:{screeningId}:{seatNo}, SET NX EX(TTL).
+// 좌석 임시점유 — string 키 seat:{screeningId}:{seatNo}, SET NX EX(TTL).
 // 좌석마다 키 1개(독립 NX·TTL·DEL). 다중좌석은 Lua로 all-or-nothing(원자).
 //
 // 인덱스: 회차별 Set seatlocks:{screeningId}에 점유 중인 좌석번호를 같은 Lua 안에서 함께 기록한다.
@@ -48,7 +48,7 @@ public class SeatLockService {
             "  end " +
             "end return 1", Long.class);
 
-    // 결제 진입 시 락 확인+연장(§2-D [7]): 전부 내 락일 때만 TTL 연장(원자). 하나라도 아니면 0(연장 안 함).
+    // 결제 진입 시 락 확인+연장: 전부 내 락일 때만 TTL 연장(원자). 하나라도 아니면 0(연장 안 함).
     // EXPIRE만 쓰면 남의 락도 연장하는 사고 → 반드시 "값이 내 것"을 먼저 검사. (정합 최종방어는 여전히 UNIQUE)
     private static final DefaultRedisScript<Long> RENEW = new DefaultRedisScript<>(
             "for i=1,#KEYS do if redis.call('GET', KEYS[i]) ~= ARGV[1] then return 0 end end " +
@@ -112,13 +112,13 @@ public class SeatLockService {
     }
 
     // 결제 진입 시: 내 락이 전부 살아있으면 TTL 연장(true) / 하나라도 아니면 연장 안 함(false, =409).
-    // PG 승인 도는 사이 락 만료 → 남이 선점 → UNIQUE 위반 환불의 UX를 줄인다(§2-D [7]).
+    // PG 승인 도는 사이 락 만료 → 남이 선점 → UNIQUE 위반 환불의 UX를 줄인다.
     public boolean renewMine(String screeningId, List<String> seatNos, String userId) {
         Long r = redis.execute(RENEW, keys(screeningId, seatNos), userId, String.valueOf(ttl));
         return r != null && r == 1L;
     }
 
-    // 좌석도(§3-1-2): 현재 임시점유 중인 좌석번호 집합. 회차당 왕복 1회.
+    // 좌석도: 현재 임시점유 중인 좌석번호 집합. 회차당 왕복 1회.
     @SuppressWarnings("unchecked")
     public Set<String> lockedSeatNos(String screeningId) {
         List<Object> live = redis.execute(LIVE_LOCKS,
@@ -129,7 +129,7 @@ public class SeatLockService {
         return out;
     }
 
-    // 회차 선택(§3-1-1): 그 관 임시점유 수.
+    // 회차 선택: 그 관 임시점유 수.
     public long countLocked(String screeningId) {
         return lockedSeatNos(screeningId).size();
     }

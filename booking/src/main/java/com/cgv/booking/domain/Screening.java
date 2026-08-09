@@ -3,7 +3,7 @@ package com.cgv.booking.domain;
 import jakarta.persistence.*;
 
 // 회차(screening) = 지점 × 관 (생중계라 시각은 movie 단위 18:00 고정). 좌석 재고의 단위.
-// 사용자는 입장(admitted) 후 이 회차(관)를 고르고 그 회차 좌석을 잡는다(§3-1-1).
+// 사용자는 입장(admitted) 후 이 회차(관)를 고르고 그 회차 좌석을 잡는다.
 @Entity
 @Table(name = "screenings")
 public class Screening {

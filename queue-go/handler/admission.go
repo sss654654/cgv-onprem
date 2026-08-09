@@ -22,7 +22,7 @@ type AdmissionPublisher interface {
 const publishTimeout = 6 * time.Second
 
 // Admission = 대기열 진입(enter)·순번조회(position)·이탈(leave)·종료(complete) 핸들러.
-// 폴링 재설계(백엔드서비스-올인원.md §1) — SSE stream/Hub는 제거, position 폴링으로 대체.
+// 폴링 재설계 — SSE stream/Hub는 제거, position 폴링으로 대체.
 type Admission struct {
 	rdb         *redis.Client
 	maxSessions int64
@@ -36,7 +36,7 @@ func NewAdmission(rdb *redis.Client, maxSessions int64, publisher AdmissionPubli
 
 func (a *Admission) Register(r *gin.Engine) {
 	r.POST("/api/admission/enter", a.enter)
-	r.GET("/api/admission/position", a.position)   // 폴링 순번 조회(§1-2)
+	r.GET("/api/admission/position", a.position)   // 폴링 순번 조회
 	r.POST("/api/admission/leave", a.leave)        // 대기열 이탈(active·waiting 제거)
 	r.POST("/api/admission/complete", a.complete)  // active 종료 → 자리 반환
 }
@@ -110,7 +110,7 @@ func (a *Admission) enter(c *gin.Context) {
 	c.JSON(http.StatusOK, resp) // active 경로(ADMITTED/ALREADY_ACTIVE)
 }
 
-// positionResponse = 폴링 응답(§1-2). 대기화면 표시용.
+// positionResponse = 폴링 응답. 대기화면 표시용.
 type positionResponse struct {
 	Status     string `json:"status"`             // WAITING / ADMITTED / EXPIRED
 	Position   int64  `json:"position,omitempty"` // 1-based 순번(WAITING). 0 불가라 omitempty 안전
@@ -119,7 +119,7 @@ type positionResponse struct {
 }
 
 // position = GET /api/admission/position?movieId=&requestId=
-// 3-state 판정(ZSCORE active→ADMITTED / ZRANK waiting→WAITING / 둘다없음→EXPIRED, §1-2).
+// 3-state 판정(ZSCORE active→ADMITTED / ZRANK waiting→WAITING / 둘다없음→EXPIRED).
 func (a *Admission) position(c *gin.Context) {
 	movieID := c.Query("movieId")
 	requestID := c.Query("requestId")

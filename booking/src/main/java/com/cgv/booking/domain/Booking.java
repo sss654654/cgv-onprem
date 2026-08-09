@@ -4,8 +4,8 @@ import jakarta.persistence.*;
 import org.springframework.data.domain.Persistable;
 import java.time.LocalDateTime;
 
-// 예매 확정(bookings) — 영구 기록. 좌석은 booking_seats에 따로(UNIQUE 걸려고, §3-1-8).
-// idempotency_key UNIQUE = 결제 더블클릭 차단(§3-1-5).
+// 예매 확정(bookings) — 영구 기록. 좌석은 booking_seats에 따로(UNIQUE 걸려고).
+// idempotency_key UNIQUE = 결제 더블클릭 차단.
 // id를 앱이 미리 채우므로(BK-xxxx) Persistable로 isNew=true를 명시한다 — 안 하면 Spring Data가
 // "id != null = 기존 엔티티"로 보고 save()가 persist 대신 merge(SELECT 선행)를 호출한다.
 // 확정 트랜잭션이 DB 커넥션 풀 병목(X 사이징)이라, 확정마다 붙던 불필요한 SELECT 1회를 없앤다.

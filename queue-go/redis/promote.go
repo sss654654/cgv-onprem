@@ -7,15 +7,15 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 )
 
-// promoteScript = 폴링 재설계 기준(백엔드서비스-올인원.md §1-3).
+// promoteScript = 폴링 재설계 기준.
 // 대기열 앞에서 빈자리만큼 꺼내 active로 옮긴다(원자).
 //   KEYS[1]=waiting, KEYS[2]=active, KEYS[3]=promoted_count, KEYS[4]=waiting_lastseen,
 //   KEYS[5]=pending_events
 //   ARGV[1]=maxSessions(정원), ARGV[2]=batch(한 번에 승격 상한), ARGV[3]=now(ms)
 //   반환 = 승격된 requestId 목록
 // vacant(빈자리) 계산을 Lua 안에서(max − ZCARD(active)) → 초과승격 차단.
-// 승격 시 waiting·waiting_lastseen 둘 다 ZREM(§1-3 정합 규칙).
-// INCRBY promoted_count(rate·ETA용, §1-3) — SSE의 processed(자가계산용)와 다른 값.
+// 승격 시 waiting·waiting_lastseen 둘 다 ZREM.
+// INCRBY promoted_count(rate·ETA용) — SSE의 processed(자가계산용)와 다른 값.
 // 승격자는 발행 대기 저널(pending_events)에도 같은 원자 실행 안에서 남긴다 — 이 Lua가 끝난 뒤
 // 발행 전에 파드가 죽어도 승격자 명단이 Redis에 남아 다른 파드가 이어서 발행한다.
 var promoteScript = goredis.NewScript(`

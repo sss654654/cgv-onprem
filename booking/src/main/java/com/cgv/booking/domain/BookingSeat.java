@@ -3,7 +3,7 @@ package com.cgv.booking.domain;
 import jakarta.persistence.*;
 
 // 판매완료 좌석(booking_seats) — 예매당 여러 행. "판매완료" 판정의 진실원.
-// UNIQUE(screening_id, seat_no) = DB 레벨 이중판매 최종 차단(§3-1-6).
+// UNIQUE(screening_id, seat_no) = DB 레벨 이중판매 최종 차단.
 //   Redis SET NX(1차)가 실패·만료해도, 같은 좌석 두 예매는 여기서 제약 위반→롤백→환불(보상).
 @Entity
 @Table(name = "booking_seats",

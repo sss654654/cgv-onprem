@@ -5,7 +5,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
-// 회차(관) 선택 화면 데이터(§3-1-1). 프론트가 branch로 그룹핑.
+// 회차(관) 선택 화면 데이터. 프론트가 branch로 그룹핑.
 @RestController
 @RequestMapping("/api/screenings")
 public class ScreeningController {

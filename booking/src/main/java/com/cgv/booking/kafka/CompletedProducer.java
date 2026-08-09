@@ -6,8 +6,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
-// bookings-completed 발행(booking→queue): "u3 예매 끝, 자리 빼" → queue가 소비해 ZREM active (§3-1-7).
-// 방향이 admissions의 반대 = 닫힌 순환(§4). 비동기(던지고 끝).
+// bookings-completed 발행(booking→queue): "u3 예매 끝, 자리 빼" → queue가 소비해 ZREM active.
+// 방향이 admissions의 반대 = 닫힌 순환. 비동기(던지고 끝).
 @Component
 public class CompletedProducer {
     private static final Logger log = LoggerFactory.getLogger(CompletedProducer.class);

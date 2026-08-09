@@ -8,7 +8,7 @@ import (
 
 // leaveScript = 대기열에서 완전 이탈(active·waiting·waiting_lastseen 전부 제거). 멱등(ZREM은 없으면 0).
 // 사용자가 대기 중 취소/홈 버튼 등으로 빠질 때. 어디 있는지 모르니 다 제거.
-// waiting 제거 시 waiting_lastseen도 같이(§1-3 정합 규칙).
+// waiting 제거 시 waiting_lastseen도 같이.
 //
 // active에 있던 사람이면 booking의 admitted에도 그 사람이 들어 있다 → 회수 이벤트를 발행
 // 대기 저널에 남긴다. 안 남기면 자리를 잃은 사용자가 계속 예매 API를 통과한다.

@@ -3,7 +3,7 @@ package com.cgv.booking.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
-// application.yml의 cgv.* 도메인 픽스값(§3-1-8) 바인딩.
+// application.yml의 cgv.* 도메인 픽스값 바인딩.
 @Component
 @ConfigurationProperties(prefix = "cgv")
 public class CgvProps {

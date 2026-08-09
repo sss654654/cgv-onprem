@@ -9,10 +9,10 @@ import (
 	"cgv-onprem/queue-go/redis"
 )
 
-// SessionTimeoutProcessor = active 세션 중 timeout 초과한 것을 주기적으로 퇴장시킨다(§1-4a).
+// SessionTimeoutProcessor = active 세션 중 timeout 초과한 것을 주기적으로 퇴장시킨다.
 // score(입장시각) 기준 만료 판정. 좌석락(seat:)은 Redis EX 자동만료지만,
 // active ZSet은 멤버별 TTL이 안 돼 이렇게 수동으로 쓸어낸다.
-// 제거된 사람은 다음 폴링/좌석요청에서 발견(SSE TIMEOUT 방송은 폐기, §1-4a).
+// 제거된 사람은 다음 폴링/좌석요청에서 발견(SSE TIMEOUT 방송은 폐기).
 type SessionTimeoutProcessor struct {
 	rdb      *redis.Client
 	timeout  time.Duration
@@ -34,7 +34,7 @@ func (p *SessionTimeoutProcessor) Start(ctx context.Context) {
 			return
 		case <-ticker.C:
 			p.processAll(ctx)
-			metrics.LoopTick("session_timeout") // 완주 도장(§7-B 행3)
+			metrics.LoopTick("session_timeout") // 완주 도장
 		}
 	}
 }

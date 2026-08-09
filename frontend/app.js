@@ -1,4 +1,4 @@
-/* CGV 예매 프론트 — 백엔드서비스-올인원 §1-8·§3-1·§3-4·§2-7 기준.
+/* CGV 예매 프론트 — 대기열 입장·좌석 선택·예매 확정 흐름.
    추가: 로그인(requestId 발급/회수)·시연용 대기열 생성기·active 1분 카운트다운(+TIMEOUT 수신). */
 
 const PRICE = 6000;
@@ -109,10 +109,10 @@ async function enter(movieId, title) {
   try {
     S.movieId = movieId; S.movieTitle = title;
     // 새로고침 복구용 — 대기/입장 진행 중임을 저장. init()이 F5 후 이걸로 enter 재호출.
-    // → 서버가 같은 requestId를 보고 active=유지 / waiting=꼬리로 밀기(§1-1).
+    // → 서버가 같은 requestId를 보고 active=유지 / waiting=꼬리로 밀기.
     localStorage.setItem('cgv_flow', JSON.stringify({ movieId, title }));
     const { ok, status, data } = await api('/api/admission/enter', { method: 'POST', body: { movieId, requestId: S.rid } });
-    // 서버의 정직한 실패(Kafka 발행 실패 → 보상 롤백, queue §3-A): 에러로 깨지지 말고 지연 안내.
+    // 서버의 정직한 실패(Kafka 발행 실패 → 보상 롤백, queue): 에러로 깨지지 말고 지연 안내.
     if (status === 503 && data && data.status === 'RETRY_LATER') {
       toast('입장 처리가 지연되고 있어요. 잠시 후 다시 시도해주세요.', true);
       return;
@@ -123,20 +123,20 @@ async function enter(movieId, title) {
       $('waitRank').textContent = data.rank;
       $('waitBehind').textContent = Math.max(0, (data.totalWaiting || 0) - (data.rank || 0));
       $('waitEta').textContent = '계산 중';
-      show('waiting'); startPolling();         // SSE 대신 GET /position 폴링(§1-2)
+      show('waiting'); startPolling();         // SSE 대신 GET /position 폴링
     } else {                                   // 200 ADMITTED → active
       goActive();
     }
   } finally { enter._busy = false; }
 }
 
-// ================= 2) 대기 폴링 (GET /position, §1-2) =================
+// ================= 2) 대기 폴링 (GET /position) =================
 // 서버 push(SSE) 없음. 클라가 주기적으로 내 순번·입장여부를 pull.
 // 응답 3-state: WAITING(순번·뒤인원·예상) / ADMITTED(입장) / EXPIRED(타임아웃·이탈).
 // active 진입 후에도 느린 폴링 유지 → 서버 세션 타임아웃(EXPIRED) 감지(SSE TIMEOUT 대체).
 function startPolling() { stopPolling(); pollPosition(); }
 function stopPolling() { if (S.pollTimer) { clearTimeout(S.pollTimer); S.pollTimer = null; } }
-function scheduleNext(ms) { stopPolling(); S.pollTimer = setTimeout(pollPosition, ms + Math.random() * 300); } // jitter(§3-3)
+function scheduleNext(ms) { stopPolling(); S.pollTimer = setTimeout(pollPosition, ms + Math.random() * 300); } // jitter
 
 async function pollPosition() {
   if (!S.rid || !S.movieId) return;
@@ -150,7 +150,7 @@ async function pollPosition() {
   }
   if (data.status === 'EXPIRED') { serverKicked(); return; }   // 큐에서 빠짐(타임아웃/이탈/세션만료)
 
-  // WAITING — 순번·뒤인원·예상시간 갱신 + 적응형 주기(§3-5)
+  // WAITING — 순번·뒤인원·예상시간 갱신 + 적응형 주기
   animateRank(data.position);
   $('waitBehind').textContent = data.behind ?? 0;         // 0도 유효값(꼴찌=뒤에 0명). omitempty 대비 ?? 0
   $('waitEta').textContent = fmtEta(data.etaSeconds ?? -1); // eta=0("곧 입장")도 유효값 — 누락 시에만 -1(계산 중)
@@ -199,7 +199,7 @@ function startActiveTimer() {
 }
 function stopActiveTimer() { clearInterval(S.timerTick); S.activeUntil = 0; $('activeTimer').classList.add('hidden'); }
 
-// ================= 3) 회차 선택 (403 재시도, §2-7) =================
+// ================= 3) 회차 선택 (403 재시도) =================
 async function toScreenings() {
   show('entering');
   for (let i = 0; i < 12; i++) {
@@ -334,7 +334,7 @@ async function backFromSeats() {
 async function goHome() {
   stopPolling();   // 이탈 절차 중 백그라운드 폴링(EXPIRED 감시)이 끼어들지 않게 먼저 정지(F8)
   const cur = screens.find(s => !$('screen-' + s).classList.contains('hidden'));
-  // 홈 = 예매 포기(§3-4 네비게이션): 잡은 좌석 락 먼저 해제(안 하면 TTL 45초까지 유령 점유) → leave(자리 반납).
+  // 홈 = 예매 포기: 잡은 좌석 락 먼저 해제(안 하면 TTL 45초까지 유령 점유) → leave(자리 반납).
   if (S.mine.size && S.screeningId && S.rid) {
     await api('/api/seats/release', { method: 'POST', body: { screeningId: S.screeningId, seatNos: [...S.mine], requestId: S.rid } });
   }
@@ -368,7 +368,7 @@ function simStatus() {
   const live = S.fakes.filter(f => !f.done).length;
   $('simStatus').textContent = `가짜 대기자 ${live}명` + (($('simBot').checked) ? ' · 봇 자동예매 ON' : '');
 }
-// 봇 틱(3초): 가짜들도 /position을 폴링한다 — 폴링 세계의 생존 신호(§1-4b).
+// 봇 틱(3초): 가짜들도 /position을 폴링한다 — 폴링 세계의 생존 신호.
 // ① WAITING 봇: 폴링 = lastseen 도장 → waiting 타임아웃(30s)에 안 쓸려나가고 줄 유지.
 //    (이거 없으면 봇들이 30초 만에 전부 evict → 대기열이 즉시 증발 — 시연 불가.)
 // ② ADMITTED 봇: 자동예매 ON이면 좌석 잡고 예매하고 나감(자리 순환). OFF면 세션 타임아웃까지 점유.
@@ -384,7 +384,7 @@ async function botTick() {
     if (p.data.status !== 'ADMITTED') continue;    // WAITING: 도장 찍었으니 줄 유지, 끝
     if (!$('simBot').checked) continue;            // 자동예매 OFF: admitted인 채 자리 점유(세션 타임아웃까지)
     const sc = await api(`/api/screenings?movieId=${encodeURIComponent(S.simMovieId)}&requestId=${encodeURIComponent(f.rid)}`);
-    if (!sc.ok || !sc.data) continue;              // admitted 직후 Kafka 갭이면 403 → 다음 틱 재시도(§2-7)
+    if (!sc.ok || !sc.data) continue;              // admitted 직후 Kafka 갭이면 403 → 다음 틱 재시도
     const avail = sc.data.find(s => s.remain > 0); if (!avail) { f.done = true; continue; }
     const seats = await api(`/api/seats?screeningId=${avail.screeningId}&requestId=${encodeURIComponent(f.rid)}`);
     const free = (seats.data || []).find(s => !s.taken); if (!free) continue;
@@ -425,7 +425,7 @@ $('simBot').onchange = simStatus;
   renderAuth();
   loadMovies();
   // 새로고침 복구 — 대기/입장 진행 중이었으면 같은 requestId로 enter 재호출.
-  // 서버: active=ALREADY_ACTIVE(유지) / waiting=꼬리로 밀림(§1-1). 로그인 상태에서만.
+  // 서버: active=ALREADY_ACTIVE(유지) / waiting=꼬리로 밀림. 로그인 상태에서만.
   try {
     const flow = JSON.parse(localStorage.getItem('cgv_flow') || 'null');
     if (S.rid && flow && flow.movieId) enter(flow.movieId, flow.title);

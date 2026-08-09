@@ -8,7 +8,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
-// 결제 → 확정 → 완료(§3-1-5/6/7). "결제하기" 한 요청.
+// 결제 → 확정 → 완료. "결제하기" 한 요청.
 @RestController
 @RequestMapping("/api/bookings")
 public class BookingController {

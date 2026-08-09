@@ -18,8 +18,8 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
-// 도메인 픽스값 시드(§3-1-8): 영화1 · 회차20(지점5×관4) · 좌석4,000(관당 A~J×1~20=200).
-// 멀티팟 레이스 차단(§2-E): 기본 비활성. 스키마·시드는 배포 Job(플랫폼 B)이 단일 실행한다.
+// 도메인 픽스값 시드: 영화1 · 회차20(지점5×관4) · 좌석4,000(관당 A~J×1~20=200).
+// 멀티팟 레이스 차단: 기본 비활성. 스키마·시드는 배포 Job(플랫폼 B)이 단일 실행한다.
 //   count()==0 가드가 비원자(TOCTOU)라 M파드 동시 기동 시 PK 충돌 → CrashLoopBackOff.
 //   로컬 단일 파드 개발 시에만 SEED_ON_START=true(+ DDL_AUTO=update)로 켠다.
 @Component

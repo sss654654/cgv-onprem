@@ -11,8 +11,8 @@ import (
 
 // Health는 헬스체크 핸들러 묶음. /ready에서 Redis를 PING하려고 클라이언트를 든다.
 // 큐 서비스는 MySQL이 없어 readiness가 Redis만 본다. Kafka는 넣지 않는다 —
-// 공유 의존성이라 넣으면 전 파드 동시 503 = 전면 중단(설계서 1부 §2-A).
-// shuttingDown = graceful shutdown ①(설계서 1부 §2-C): SIGTERM 수신 시 main이 올리는
+// 공유 의존성이라 넣으면 전 파드 동시 503 = 전면 중단.
+// shuttingDown = graceful shutdown ①: SIGTERM 수신 시 main이 올리는
 // 원자 플래그. ready가 503으로 바뀌어 Service 명단에서 빠지고 새 요청 유입이 끊긴다.
 type Health struct {
 	rdb          *redis.Client
@@ -30,7 +30,7 @@ func (h *Health) BeginShutdown() {
 
 // Register는 헬스 라우트를 gin 엔진에 붙인다.
 // (구 /health·/health/force-fail-503은 삭제 — 어디서도 안 쓰는 라우트와 상시 장애 스위치는
-// "설명 못 하는 구성요소"라 제거. 드레인·장애 시연은 표준 수단으로 대체. 설계서 1부 §2-A.)
+// "설명 못 하는 구성요소"라 제거. 드레인·장애 시연은 표준 수단으로 대체.)
 func (h *Health) Register(r *gin.Engine) {
 	r.GET("/health/live", h.live)
 	r.GET("/health/ready", h.ready)

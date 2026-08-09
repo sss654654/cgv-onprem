@@ -7,14 +7,14 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 )
 
-// PositionResult = GET /position 응답 재료(백엔드서비스-올인원.md §1-2).
+// PositionResult = GET /position 응답 재료.
 type PositionResult struct {
 	Status   string // WAITING / ADMITTED / EXPIRED
 	Position int64  // 1-based 순번(WAITING일 때만)
 	Behind   int64  // 내 뒤 인원(WAITING일 때만)
 }
 
-// positionScript = 3-state 판정 + 생존 도장을 한 번의 원자 실행으로(§1-2).
+// positionScript = 3-state 판정 + 생존 도장을 한 번의 원자 실행으로.
 //  ① ZSCORE active  → 있으면 ADMITTED (승격됨 — active 먼저 봐야 승격자를 놓치지 않음)
 //  ② ZRANK waiting  → 있으면 WAITING + position·behind + lastseen 도장
 //  ③ 둘 다 없음     → EXPIRED (타임아웃·이탈·완료)
@@ -40,13 +40,13 @@ local total = redis.call('ZCARD', KEYS[2])
 local position = rank + 1
 local behind = total - position
 if behind < 0 then behind = 0 end
--- 생존 도장(§1-4b) — 폴링이 곧 "나 살아있음" 신호. 판정과 같은 실행 안에서 찍어야
+-- 생존 도장 — 폴링이 곧 "나 살아있음" 신호. 판정과 같은 실행 안에서 찍어야
 -- 도장과 판정 사이에 waiting 타임아웃이 끼어들지 않는다.
 redis.call('ZADD', KEYS[3], now, m)
 return {'WAITING', position, behind}
 `)
 
-// Position = 폴링 순번 조회(§1-2).
+// Position = 폴링 순번 조회.
 // [2-1] 로컬은 캐시 없이 매 요청 직접 조회(부하 없음). 캐싱은 2-2에서.
 func (c *Client) Position(ctx context.Context, movieID, requestID string, now int64) (PositionResult, error) {
 	keys := []string{ActiveKey(movieID), WaitingKey(movieID), WaitingLastseenKey(movieID)}

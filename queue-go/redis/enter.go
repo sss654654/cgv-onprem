@@ -8,16 +8,16 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 )
 
-// enterScript = 폴링 재설계 기준(백엔드서비스-올인원.md §1-1).
+// enterScript = 폴링 재설계 기준.
 // "정원 확인 → 입장 or 대기"를 원자 처리.
 //   KEYS[1]=active, KEYS[2]=waiting, KEYS[3]=waiting_lastseen, KEYS[4]=pending_events
 //   ARGV[1]=maxSessions, ARGV[2]=member(requestId), ARGV[3]=now(ms)
 // 반환(상태 1=active경로 / 2=waiting경로):
-//   {1,'ALREADY_ACTIVE', activeCount}         이미 입장 → 자리 유지(§1-1 새로고침 정책)
+//   {1,'ALREADY_ACTIVE', activeCount}         이미 입장 → 자리 유지
 //   {1,'ADMITTED', activeCount+1}
 //   {2,'WAITING', rank+1, totalWaiting}
-// 새로고침 정책(§1-1): active 재진입=유지 / waiting 재진입=꼬리로 밀기(ZREM+ZADD).
-// waiting 경로는 waiting·waiting_lastseen 둘 다 ZADD(생존 추적 시작, §1-4b).
+// 새로고침 정책: active 재진입=유지 / waiting 재진입=꼬리로 밀기(ZREM+ZADD).
+// waiting 경로는 waiting·waiting_lastseen 둘 다 ZADD(생존 추적 시작).
 // baseline·processed 제거 — 폴링은 순번을 서버가 ZRANK로 직접 주므로 자가계산 불필요.
 // ADMITTED면 발행 대기 저널(pending_events)에도 같은 원자 실행 안에서 기록한다 —
 // active 등록과 "booking에 알릴 의무"가 갈라지지 않게(발행 전 즉사해도 저널이 남는다).

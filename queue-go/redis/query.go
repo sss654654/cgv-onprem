@@ -9,7 +9,7 @@ func (c *Client) WaitingCount(ctx context.Context, movieID string) (int64, error
 	return c.rdb.ZCard(ctx, WaitingKey(movieID)).Result()
 }
 
-// ActiveCount = 현재 입장(active) 인원 — queue_active 게이지(설계서 §7-B)의 재료.
+// ActiveCount = 현재 입장(active) 인원 — queue_active 게이지의 재료.
 func (c *Client) ActiveCount(ctx context.Context, movieID string) (int64, error) {
 	return c.rdb.ZCard(ctx, ActiveKey(movieID)).Result()
 }

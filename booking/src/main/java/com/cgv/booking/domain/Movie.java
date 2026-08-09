@@ -3,7 +3,7 @@ package com.cgv.booking.domain;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
-// 영화(방송) — 생중계라 1개, 시각 단일(§3-1-8). queue/admitted는 이 movieId 단위.
+// 영화(방송) — 생중계라 1개, 시각 단일. queue/admitted는 이 movieId 단위.
 @Entity
 @Table(name = "movies")
 public class Movie {

@@ -10,14 +10,14 @@ import (
 	"cgv-onprem/queue-go/redis"
 )
 
-// QueueProcessor = 주기적으로 대기자를 active로 승격하는 백그라운드 루프(§1-3).
+// QueueProcessor = 주기적으로 대기자를 active로 승격하는 백그라운드 루프.
 // AdmissionPublisher = 상태 변경을 서비스간(Kafka)으로 발행. main이 구현 주입.
 // 승격·입장은 admissions로, 회수는 admissions-revoked로 나간다.
 type AdmissionPublisher interface {
 	PublishEvents(ctx context.Context, topic string, evs []kafka.Event) error
 }
 
-// promotePause = 발행 실패 후 승격을 쉬는 시간(설계서 1부 §3-A "승격 중단").
+// promotePause = 발행 실패 후 승격을 쉬는 시간.
 // 틱마다 승격→실패를 반복하는 churn을 막고, 지나면 자동 재개 = "회복 시 재개".
 // 파드 로컬 변수가 아니라 Redis 키(TTL)로 둔다 — replica가 2 이상이면 로컬 변수로는
 // 다른 파드가 계속 승격해 중단이 부분적으로만 걸린다.
@@ -48,13 +48,13 @@ func (p *QueueProcessor) Start(ctx context.Context) {
 			return
 		case <-ticker.C:
 			p.processAll(ctx)
-			metrics.LoopTick("promote") // 완주 도장(§7-B 행3) — 틱 끝에 찍어야 행(hang)이 잡힌다
+			metrics.LoopTick("promote") // 완주 도장 — 틱 끝에 찍어야 행(hang)이 잡힌다
 		}
 	}
 }
 
 func (p *QueueProcessor) processAll(ctx context.Context) {
-	// 발행 실패 직후엔 승격 자체를 쉰다(§3-A) — 대기열 보존, Kafka 회복 후 재개.
+	// 발행 실패 직후엔 승격 자체를 쉰다 — 대기열 보존, Kafka 회복 후 재개.
 	// 플래그가 Redis에 있어 전 파드가 같이 쉰다. 조회 실패는 승격을 막지 않는다(가용성 우선).
 	if paused, err := p.rdb.PromotePaused(ctx); err == nil && paused {
 		return
@@ -70,7 +70,7 @@ func (p *QueueProcessor) processAll(ctx context.Context) {
 }
 
 // processMovie = 한 영화의 빈자리만큼 대기자를 승격하고 admissions를 발행한다.
-// vacant(빈자리) 계산은 promote Lua 안에서(P2, §1-3) → 여기선 maxSessions·batch만 넘김.
+// vacant(빈자리) 계산은 promote Lua 안에서(P2) → 여기선 maxSessions·batch만 넘김.
 func (p *QueueProcessor) processMovie(ctx context.Context, movieID string) {
 	waiting, err := p.rdb.WaitingCount(ctx, movieID)
 	if err != nil {
@@ -106,7 +106,7 @@ func (p *QueueProcessor) processMovie(ctx context.Context, movieID string) {
 			members = append(members, redis.PendingMember(redis.KindAdmit, redis.ReasonPromote, requestID))
 		}
 		if err := p.publisher.PublishEvents(ctx, kafka.TopicAdmissions, evs); err != nil {
-			// 정직한 실패(§3-A): 저널을 지우지 않고 남긴다 → 스윕이 재발행한다.
+			// 정직한 실패: 저널을 지우지 않고 남긴다 → 스윕이 재발행한다.
 			// 되돌리기(롤백)는 하지 않는다 — ctx 취소·타임아웃은 브로커 append 이후에도
 			// 에러로 오므로, 되돌리면 booking엔 입장이 들어갔는데 queue만 자리를 뺏는 상태가 된다.
 			// 승격은 잠시 멈춘다(전 파드 공통).
@@ -126,7 +126,7 @@ func (p *QueueProcessor) processMovie(ctx context.Context, movieID string) {
 		slog.InfoContext(ctx, "승격·발행", "count", published, "movie", movieID)
 	}
 
-	// rate 관측(§1-3): 실제로 발행까지 끝난 수만 반영 — 실패분이 ETA를 부풀리지 않게.
+	// rate 관측: 실제로 발행까지 끝난 수만 반영 — 실패분이 ETA를 부풀리지 않게.
 	if p.rate != nil {
 		p.rate.Observe(movieID, published, p.interval)
 	}

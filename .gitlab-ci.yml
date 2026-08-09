@@ -18,8 +18,12 @@ workflow:
     # 브랜치 push 인데 그 브랜치에 열린 MR 이 있으면 만들지 않는다. 위에서 이미 만들었다.
     - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
       when: never
-    # MR 이 없는 브랜치는 이 줄로 돈다. 이 줄이 없으면 MR 열기 전에 아무것도 안 돈다.
-    - if: $CI_COMMIT_BRANCH
+    # 브랜치 파이프라인은 dev(머지 결과)만. 일반 브랜치를 넣지 않는 이유 —
+    # push 뒤에 MR 을 만들면 push 사건(브랜치)과 MR 생성 사건이 각각 파이프라인을 만들어
+    # 같은 커밋이 두 번 돈다. 위의 차단은 "push 시점에 MR 이 이미 열린" 경우만 걸러서,
+    # 순서가 반대면 못 막는다. 브랜치 쪽을 dev 로 좁히면 순서와 무관하게 하나다.
+    # 대가: 일반 브랜치는 MR 을 열어야 CI 가 돈다.
+    - if: $CI_COMMIT_BRANCH == "dev"
 
 # build 가 만든 이미지는 job 컨테이너가 아니라 데스크탑 데몬에 남는다. 그래서
 # scan 과 publish 가 다른 job 인데도 같은 이름($SVC:$TAG)으로 그 이미지를 이어받는다.

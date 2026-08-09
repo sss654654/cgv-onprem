@@ -9,9 +9,9 @@ import (
 	"cgv-onprem/queue-go/redis"
 )
 
-// WaitingTimeoutProcessor = 폴링이 끊긴 대기자를 주기적으로 evict한다(§1-4b).
+// WaitingTimeoutProcessor = 폴링이 끊긴 대기자를 주기적으로 evict한다.
 // SSE 연결끊김 감지의 폴링판 — "마지막 폴링(lastseen)이 오래된 사람 = 나간 것"으로 유추.
-// waiting·waiting_lastseen 둘 다에서 원자 제거(ExpireWaiting, §1-3 정합 규칙).
+// waiting·waiting_lastseen 둘 다에서 원자 제거(ExpireWaiting — 두 키 정합 규칙).
 // [2-1] 로컬은 단일 인스턴스라 그냥 돎(멀티팟 리더선출은 2-2).
 type WaitingTimeoutProcessor struct {
 	rdb      *redis.Client
@@ -34,7 +34,7 @@ func (p *WaitingTimeoutProcessor) Start(ctx context.Context) {
 			return
 		case <-ticker.C:
 			p.processAll(ctx)
-			metrics.LoopTick("waiting_timeout") // 완주 도장(§7-B 행3)
+			metrics.LoopTick("waiting_timeout") // 완주 도장
 		}
 	}
 }

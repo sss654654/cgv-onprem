@@ -6,8 +6,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 
-// admitted = 방송 입장 인증. Kafka admissions로 채워지고, 게이트로 검사(§3-1-3).
-// 영화(movie) 단위 — 사람은 방송에 입장하지 관에 입장하는 게 아님(§3-1 단위 결정).
+// admitted = 방송 입장 인증. Kafka admissions로 채워지고, 게이트로 검사.
+// 영화(movie) 단위 — 사람은 방송에 입장하지 관에 입장하는 게 아님.
 //
 // 표현: Set(SADD/SISMEMBER)이 아니라 "멤버당 키 1개 + TTL"이다.
 //   이유 — 입장 인증은 queue의 세션 타임아웃과 함께 사라져야 하는데, Redis Set은 멤버별 TTL이 없다.
@@ -34,7 +34,7 @@ public class AdmittedService {
         redis.opsForValue().set(key(movieId, requestId), "1", ttl);
     }
 
-    // 게이트(§3-1-3 ①): 이 사람이 입장객이냐. 모든 booking 동작 전 검사.
+    // 게이트: 이 사람이 입장객이냐. 모든 booking 동작 전 검사.
     // TTL 만료 = 자동 미입장 → queue 세션 타임아웃과 booking 게이트가 다시 붙는다.
     public boolean isAdmitted(String movieId, String requestId) {
         return Boolean.TRUE.equals(redis.hasKey(key(movieId, requestId)));

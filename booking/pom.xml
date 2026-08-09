@@ -60,7 +60,7 @@
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
-        <!-- 관측(§7): Actuator = readiness(/actuator/health) + metric 통로(/actuator/prometheus).
+        <!-- 관측: Actuator = readiness(/actuator/health) + metric 통로(/actuator/prometheus).
              Micrometer Prometheus registry = HikariCP·JVM·HTTP·Kafka 지표를 Prometheus 포맷으로. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -71,13 +71,13 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
             <scope>runtime</scope>
         </dependency>
-        <!-- 관측(§7) 로그: JSON 구조화 로그(logback → STDOUT). MDC(traceId·spanId) 포함 → Loki 파싱. -->
+        <!-- 관측 로그: JSON 구조화 로그(logback → STDOUT). MDC(traceId·spanId) 포함 → Loki 파싱. -->
         <dependency>
             <groupId>net.logstash.logback</groupId>
             <artifactId>logstash-logback-encoder</artifactId>
             <version>7.4</version>
         </dependency>
-        <!-- 관측(§7) trace: Micrometer Observation → OTel 브리지 + OTLP 익스포터.
+        <!-- 관측 trace: Micrometer Observation → OTel 브리지 + OTLP 익스포터.
              코드 수술 없음 — HTTP·Kafka observation이 자동 span 생성, OTLP로 Tempo에 전송.
              버전은 Spring Boot 3.3.4 BOM이 관리(micrometer-tracing·opentelemetry BOM). -->
         <dependency>

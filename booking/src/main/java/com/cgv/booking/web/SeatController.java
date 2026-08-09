@@ -9,7 +9,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 
-// 좌석도 조회(§3-1-2) + 점유(§3-1-3) + 해제(뒤로가기, §3-4).
+// 좌석도 조회 + 점유 + 해제(뒤로가기).
 @RestController
 @RequestMapping("/api/seats")
 public class SeatController {

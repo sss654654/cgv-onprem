@@ -40,7 +40,7 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_LOG_DIRS: /var/lib/kafka/data   # 영속 경로 명시(§2-2). clean-shutdown 추적 → 재시작 안정.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data   # 영속 경로 명시. clean-shutdown 추적 → 재시작 안정.
     volumes:
       - kafka-data:/var/lib/kafka/data
 
@@ -52,11 +52,11 @@ services:
       REDIS_HOST: redis
       KAFKA_BROKER: kafka:9092
       MAX_SESSIONS: "2"          # 데모용 소정원(2명 즉시입장, 나머지 대기 → 승격 순환이 눈에 보임)
-      SESSION_TIMEOUT: "60"      # 데모용 1분(실운영 600=10분). 프론트 카운트다운·좌석락(45s)과 정합. §3-1-4
-      OTLP_GRPC_ENDPOINT: "localhost:4317"   # OTel/gRPC 전송처(queue 전용 env — booking의 HTTP와 분리). 로컬 compose엔 collector 없음 → exporter가 lazy 실패(비블로킹, §2-B). k3s가 실제 Tempo/collector 주입.
+      SESSION_TIMEOUT: "60"      # 데모용 1분(실운영 600=10분). 프론트 카운트다운·좌석락(45s)과 정합.
+      OTLP_GRPC_ENDPOINT: "localhost:4317"   # OTel/gRPC 전송처(queue 전용 env — booking의 HTTP와 분리). 로컬 compose엔 collector 없음 → exporter가 lazy 실패(비블로킹). k3s가 실제 Tempo/collector 주입.
     ports:
       - "18090:8090"  # 검증용 직노출. 호스트 8090은 Wondershare(WsToastNotification)가 점유해 18090으로 우회(mirrored 모드에서 충돌).
-      - "19091:9091"  # /metrics(promauto, §7-B) 로컬 확인용. k3s에선 노출 안 함(ServiceMonitor만 접근 — §5-D).
+      - "19091:9091"  # /metrics(promauto) 로컬 확인용. k3s에선 노출 안 함(ServiceMonitor만 접근).
     depends_on:
       - redis
       - kafka

@@ -34,7 +34,7 @@ func (h traceHandler) WithGroup(name string) slog.Handler {
 
 // setupLogging = slog JSON 핸들러를 기본 로거로 세운다. slog.SetDefault는 표준 log
 // 패키지의 출력까지 이 핸들러로 재라우팅한다 → 기존 log.Printf 호출부가 손대지 않아도
-// 그대로 JSON 한 줄로 나간다(§7 구조화 로그 규약).
+// 그대로 JSON 한 줄로 나간다.
 func setupLogging() {
 	base := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
 	slog.SetDefault(slog.New(traceHandler{Handler: base}))

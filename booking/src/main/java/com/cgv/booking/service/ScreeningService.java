@@ -13,8 +13,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-// 회차(관) 선택 화면(§3-1-1): 이 방송의 관 목록 + 각 잔여좌석.
-// 잔여 = total − 임시점유(Redis) − 판매완료(MySQL). 두 출처 합산 필수(§3-1-1).
+// 회차(관) 선택 화면: 이 방송의 관 목록 + 각 잔여좌석.
+// 잔여 = total − 임시점유(Redis) − 판매완료(MySQL). 두 출처 합산 필수.
 @Service
 public class ScreeningService {
     private final ScreeningRepository screenings;
@@ -35,7 +35,7 @@ public class ScreeningService {
     //   점유수: 회차별 인덱스 Set을 읽는다(회차당 Redis 왕복 1회). 이 Redis는 queue가 대기열 폴링을
     //           처리하는 인스턴스와 같아서, 여기서 왕복이 늘면 queue의 지연이 먼저 무너진다.
     public List<ScreeningView> listForMovie(String movieId, String requestId) {
-        // 게이트(§3-1-3 ①): 방송 입장객 아니면 403.
+        // 게이트: 방송 입장객 아니면 403.
         if (!admitted.isAdmitted(movieId, requestId)) {
             throw ApiException.forbidden("입장객이 아닙니다(미승인). 대기열을 거쳐 입장하세요.");
         }

@@ -6,7 +6,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.util.Map;
 
-// ApiException → 해당 HTTP 상태로. 프론트는 403=미입장·409=좌석선점으로 분기(§3-4).
+// ApiException → 해당 HTTP 상태로. 프론트는 403=미입장·409=좌석선점으로 분기.
 @RestControllerAdvice
 public class ApiExceptionHandler {
     @ExceptionHandler(ApiException.class)
