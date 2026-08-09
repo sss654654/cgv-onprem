@@ -60,5 +60,12 @@ func (p *SessionTimeoutProcessor) processAll(ctx context.Context) {
 			// 만료 목록 전체를 로그에 싣지 않는다 — 한 틱 최대 1000건이라 로그가 폭증한다.
 			slog.InfoContext(ctx, "active 타임아웃", "count", len(expired), "movie", movieID)
 		}
+		// 흔적(active·waiting·저널)이 전부 빈 영화는 추적에서 내린다 — 안 내리면 트래픽이
+		// 한 번이라도 있던 영화를 루프들이 영구히 돈다. 저널 잔여 시엔 유지(스윕 대상 보존).
+		if removed, uErr := p.rdb.UntrackIfIdle(ctx, movieID); uErr != nil {
+			slog.WarnContext(ctx, "유휴 영화 추적 해제 실패", "movie", movieID, "err", uErr)
+		} else if removed {
+			slog.InfoContext(ctx, "유휴 영화 추적 해제", "movie", movieID)
+		}
 	}
 }

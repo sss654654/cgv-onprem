@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"log/slog"
 
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -58,12 +57,9 @@ func (c *Client) Promote(ctx context.Context, movieID string, maxSessions, batch
 		return nil, err
 	}
 
-	// 대기열이 비면 추적 Set에서 제거(승격 루프가 빈 영화를 안 돌게).
-	if n, _ := c.rdb.ZCard(ctx, WaitingKey(movieID)).Result(); n == 0 {
-		if err := c.rdb.SRem(ctx, WaitingMoviesKey, movieID).Err(); err != nil {
-			slog.WarnContext(ctx, "promote 후처리: waiting_movies 추적 해제 실패", "movie", movieID, "err", err)
-		}
-	}
+	// waiting_movies 해제는 여기서 하지 않는다 — ZCARD 확인과 SREM이 별개 왕복이라
+	// 그 사이 새 enter의 등록이 끼면 방금 등록된 추적이 지워진다. 해제는 UntrackIfIdle
+	// (원자 Lua, active·waiting·발행 저널 전부 빈 것 확인)이 타임아웃 루프에서 맡는다.
 
 	// Lua는 문자열 배열을 []interface{}로 돌려줌 → []string으로.
 	arr, _ := raw.([]interface{})

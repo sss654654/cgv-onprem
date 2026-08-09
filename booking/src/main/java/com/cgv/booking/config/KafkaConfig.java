@@ -23,8 +23,10 @@ import org.apache.kafka.common.TopicPartition;
 // "몇 건이 유실 경로로 갔는가"를 Grafana에서 셀 수 있게 한다(로그만으로는 못 센다).
 // DLT 발행 자체가 실패해도(토픽 미생성 등) 삼키지 않고 ERROR로 남긴다.
 //
-// 운영 전제: DLT 토픽(기본 admissions.DLT)이 브로커에 있어야 한다. 자동생성이 꺼진 클러스터에서는
-// 토픽 선언(KafkaTopic)에 추가해야 하고, 그 전까지는 발행 실패 로그로 드러난다.
+// 운영 전제: DLT 토픽이 브로커에 있어야 한다. 이 에러핸들러는 리스너 공용이고 대상 토픽이
+// "{원본 토픽}+접미사"라, 소비하는 토픽마다 DLT가 하나씩 필요하다 — admissions.DLT와
+// admissions-revoked.DLT 두 개. 자동생성이 꺼진 클러스터에서는 토픽 선언(KafkaTopic)에
+// 둘 다 있어야 하고, 없으면 DLT 발행 실패 로그로만 드러난다.
 // (Boot 오토컨피그가 CommonErrorHandler 빈을 리스너 컨테이너 팩토리에 자동 배선한다.)
 @Configuration
 public class KafkaConfig {

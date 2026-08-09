@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -11,6 +12,22 @@ import (
 	"cgv-onprem/queue-go/metrics"
 	"cgv-onprem/queue-go/redis"
 )
+
+// idPattern = movieId·requestId 허용 형식. 두 값은 Redis 키 이름·메트릭 라벨·발행 저널
+// member('|' 구분)에 그대로 들어간다 — 자유 문자열을 받으면 요청 한 번으로 키와 시계열이
+// 늘어나고 지울 수단이 없다. 클라이언트 발급 UUID(36자)를 덮는 64자 상한.
+var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// rejectInvalidIDs = 형식 밖 id가 있으면 400을 쓰고 true를 반환한다.
+func rejectInvalidIDs(c *gin.Context, ids ...string) bool {
+	for _, id := range ids {
+		if !idPattern.MatchString(id) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "movieId, requestId 형식이 올바르지 않습니다(영숫자·_·-, 최대 64자)"})
+			return true
+		}
+	}
+	return false
+}
 
 // AdmissionPublisher = 입장 시 서비스간(Kafka) 입장 이벤트 발행. main이 주입(kafka producer).
 type AdmissionPublisher interface {
@@ -60,6 +77,9 @@ func (a *Admission) enter(c *gin.Context) {
 	var req enterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "movieId, requestId는 필수입니다"})
+		return
+	}
+	if rejectInvalidIDs(c, req.MovieID, req.RequestID) {
 		return
 	}
 
@@ -127,6 +147,9 @@ func (a *Admission) position(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "movieId, requestId 필수"})
 		return
 	}
+	if rejectInvalidIDs(c, movieID, requestID) {
+		return
+	}
 
 	now := time.Now().UnixMilli()
 	res, err := a.rdb.Position(c.Request.Context(), movieID, requestID, now)
@@ -160,6 +183,9 @@ func (a *Admission) leave(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "movieId, requestId는 필수입니다"})
 		return
 	}
+	if rejectInvalidIDs(c, req.MovieID, req.RequestID) {
+		return
+	}
 	// active에 있던 사용자면 회수 이벤트가 발행 대기 저널에 남는다(스윕이 booking에 통보).
 	if err := a.rdb.Leave(c.Request.Context(), req.MovieID, req.RequestID, time.Now().UnixMilli()); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
@@ -173,6 +199,9 @@ func (a *Admission) complete(c *gin.Context) {
 	var req idRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "movieId, requestId는 필수입니다"})
+		return
+	}
+	if rejectInvalidIDs(c, req.MovieID, req.RequestID) {
 		return
 	}
 	// 사용자가 부른 자리 반환이라 booking의 admitted는 아직 그 사용자를 들고 있다
