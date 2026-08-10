@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -56,6 +57,7 @@ func (a *Admission) Register(r *gin.Engine) {
 	r.POST("/api/admission/enter", a.enter)
 	r.GET("/api/admission/position", a.position)   // 폴링 순번 조회
 	r.GET("/api/admission/stats", a.stats)         // 전체 현황 집계(시뮬레이터 화면용, 읽기 전용)
+	r.GET("/api/admission/events", a.events)       // 실황 피드(화면용, 읽기 전용) — 모든 방문자가 같은 내용을 본다
 	r.POST("/api/admission/leave", a.leave)        // 대기열 이탈(active·waiting 제거)
 	r.POST("/api/admission/complete", a.complete)  // active 종료 → 자리 반환
 	// 대기열 초기화 — 토큰을 주입한 배포에만 존재한다. 라우트를 조건부로 다는 이유:
@@ -137,6 +139,12 @@ func (a *Admission) enter(c *gin.Context) {
 		resp.TotalWaiting = res.Count
 		c.JSON(http.StatusAccepted, resp)
 		return
+	}
+	// 실황 피드(화면용) — 첫 입장만(재진입 ALREADY_ACTIVE는 상태 변화가 아님). best-effort.
+	if res.Code == "ADMITTED" {
+		if err := a.rdb.AppendEvents(c.Request.Context(), req.MovieID, "ADMIT", []string{req.RequestID}, now); err != nil {
+			slog.WarnContext(c.Request.Context(), "실황 기록 실패(표시만 영향)", "err", err)
+		}
 	}
 	// active 경로(즉시 입장) → booking이 알도록 Kafka 입장 이벤트 발행.
 	// 안 하면 booking admitted set에 없어 좌석선택이 403.
@@ -241,6 +249,27 @@ func (a *Admission) stats(c *gin.Context) {
 	})
 }
 
+// events = GET /api/admission/events?movieId=&after=
+// 실황 피드 — 최근 이벤트를 after(마지막으로 본 id) 이후만 돌려준다. 상태를 바꾸지 않는다.
+// 값이 Redis라 어느 파드·어느 방문자가 읽어도 같은 내용이다.
+func (a *Admission) events(c *gin.Context) {
+	movieID := c.Query("movieId")
+	if movieID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "movieId 필수"})
+		return
+	}
+	if rejectInvalidIDs(c, movieID) {
+		return
+	}
+	after, _ := strconv.ParseInt(c.Query("after"), 10, 64) // 파싱 실패 = 0 = 처음부터(최근 30건)
+	evs, last, err := a.rdb.ReadEvents(c.Request.Context(), movieID, after)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"events": evs, "last": last})
+}
+
 // idRequest = leave/complete 공용 요청(movieId+requestId).
 type idRequest struct {
 	MovieID   string `json:"movieId" binding:"required"`
@@ -258,9 +287,17 @@ func (a *Admission) leave(c *gin.Context) {
 		return
 	}
 	// active에 있던 사용자면 회수 이벤트가 발행 대기 저널에 남는다(스윕이 booking에 통보).
-	if err := a.rdb.Leave(c.Request.Context(), req.MovieID, req.RequestID, time.Now().UnixMilli()); err != nil {
+	now := time.Now().UnixMilli()
+	existed, err := a.rdb.Leave(c.Request.Context(), req.MovieID, req.RequestID, now)
+	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
+	}
+	// 실황 피드(화면용) — 실제로 줄에 있던 사용자만(없는 id로 불러도 유령 이탈이 안 찍히게). best-effort.
+	if existed {
+		if fErr := a.rdb.AppendEvents(c.Request.Context(), req.MovieID, "LEAVE", []string{req.RequestID}, now); fErr != nil {
+			slog.WarnContext(c.Request.Context(), "실황 기록 실패(표시만 영향)", "err", fErr)
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "LEFT", "requestId": req.RequestID})
 }
@@ -278,10 +315,17 @@ func (a *Admission) complete(c *gin.Context) {
 	// 사용자가 부른 자리 반환이라 booking의 admitted는 아직 그 사용자를 들고 있다
 	// → 회수 이벤트를 저널에 남겨 스윕이 통보한다. (booking의 예매 확정으로 끝난 경우는
 	// bookings-completed 소비 경로가 CompleteActive를 쓴다 — 그쪽은 booking이 이미 지웠다.)
-	removed, err := a.rdb.ReleaseActive(c.Request.Context(), req.MovieID, req.RequestID, redis.ReasonComplete, time.Now().UnixMilli())
+	nowMs := time.Now().UnixMilli()
+	removed, err := a.rdb.ReleaseActive(c.Request.Context(), req.MovieID, req.RequestID, redis.ReasonComplete, nowMs)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
+	}
+	// 실황 피드(화면용) — 실제 반환만. best-effort.
+	if removed {
+		if fErr := a.rdb.AppendEvents(c.Request.Context(), req.MovieID, "RETURN", []string{req.RequestID}, nowMs); fErr != nil {
+			slog.WarnContext(c.Request.Context(), "실황 기록 실패(표시만 영향)", "err", fErr)
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "COMPLETED", "requestId": req.RequestID, "removed": removed})
 }

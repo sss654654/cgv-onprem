@@ -55,6 +55,10 @@ func (p *WaitingTimeoutProcessor) processAll(ctx context.Context) {
 		}
 		if len(evicted) > 0 {
 			slog.InfoContext(ctx, "waiting 폴링 타임아웃", "count", len(evicted), "movie", movieID, "evicted", evicted)
+			// 실황 피드(화면용) — best-effort.
+			if fErr := p.rdb.AppendEvents(ctx, movieID, "WAIT_EXPIRE", evicted, time.Now().UnixMilli()); fErr != nil {
+				slog.WarnContext(ctx, "실황 기록 실패(표시만 영향)", "movie", movieID, "err", fErr)
+			}
 		}
 	}
 }

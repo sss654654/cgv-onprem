@@ -79,14 +79,22 @@ k3s에서는 라우팅 역할을 Traefik Ingress가 대신하며, nginx는 정�
 
 ```
 frontend/
-├── index.html     화면 6종의 마크업(section) + 시뮬레이터 패널
-├── app.js          상태 머신·API 호출·폴링·네비게이션 전부
-├── style.css       스타일(다크 톤)
+├── index.html      화면 7종의 마크업(section) + 시뮬레이터 콘솔
+├── js/
+│   ├── core.js     상태(S)·저장소 래퍼·DOM 유틸·API 래퍼·포맷·실황 출력·게이트 판정
+│   ├── live.js     서버가 정본인 것 — 전체 현황(stats)·실황(events) 폴링
+│   ├── booking.js  서비스 여정 — 신원·영화 목록·입장·대기 폴링·회차·좌석·결제·완료
+│   ├── sim.js      시뮬레이터 — 가상 관객 엔진·오픈 게이트 렌더/발동·콘솔
+│   └── main.js     부팅과 배선 — 이벤트 연결·시계·운영자 도구·상태 복구
+├── style.css       디자인 토큰(색·타입 스케일·간격) 기반 스타일
+├── og.png          링크 공유 카드
 ├── nginx.conf      라우팅 3분기 + SPA fallback + no-cache
 └── Dockerfile      nginx-unprivileged(비루트 uid 101, 8080)
 ```
 
-`app.js` 하나에 앱 상태(`S`), 화면 전환(`show`), API 래퍼(`api` — 네트워크 예외까지 잡아 폴링이 멈추지 않게 함), 폴링 루프, 좌석 그리드 렌더가 모두 있다. 별도 상태관리 라이브러리·번들러가 없다.
+번들러가 없다. 브라우저 표준 ES 모듈(`<script type="module">`)로 나누고, 의존은 한 방향으로만 흐른다 — `core → live → booking → sim → main`. 순환이 생기지 않도록 게이트 판정처럼 양쪽이 쓰는 순수 로직은 `core`에 둔다.
+
+상태를 한 곳에 모은 것이 규칙이다: 화면 상태는 `core.js`의 `S`, 브라우저에 남기는 값은 같은 파일의 `K`(키 목록)와 `store` 래퍼를 거친다. 저장소 키 문자열을 여기저기 적으면 지우는 곳과 쓰는 곳이 어긋난다.
 
 ---
 

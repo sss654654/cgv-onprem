@@ -22,13 +22,13 @@ local m = ARGV[1]
 local now = tonumber(ARGV[2])
 local reason = ARGV[3]
 local wasActive = redis.call('ZREM', KEYS[1], m)
-redis.call('ZREM', KEYS[2], m)
+local wasWaiting = redis.call('ZREM', KEYS[2], m)
 redis.call('ZREM', KEYS[3], m)
 redis.call('ZREM', KEYS[4], 'A|ENTER|' .. m, 'A|PROMOTE|' .. m)
 if wasActive == 1 then
   redis.call('ZADD', KEYS[4], now, 'R|' .. reason .. '|' .. m)
 end
-return wasActive
+return wasActive + wasWaiting * 2
 `)
 
 // releaseScript = active 세션만 종료(자리 반환). waiting은 건드리지 않는다.
@@ -49,9 +49,15 @@ return wasActive
 `)
 
 // Leave = 대기열에서 완전 이탈. active에 있었으면 회수 이벤트를 저널에 남긴다.
-func (c *Client) Leave(ctx context.Context, movieID, requestID string, now int64) error {
+// 반환값 = 실제로 어딘가(active 또는 waiting)에 있었는지 — 피드 기록의 노이즈 방지용
+// (없는 requestId로 leave를 불러도 화면 피드에 유령 이탈이 찍히지 않게).
+func (c *Client) Leave(ctx context.Context, movieID, requestID string, now int64) (bool, error) {
 	keys := []string{ActiveKey(movieID), WaitingKey(movieID), WaitingLastseenKey(movieID), PendingKey(movieID)}
-	return leaveScript.Run(ctx, c.rdb, keys, requestID, now, ReasonLeave).Err()
+	n, err := leaveScript.Run(ctx, c.rdb, keys, requestID, now, ReasonLeave).Int64()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // ReleaseActive = 사용자가 부른 active 종료(자리 반환) → 회수 이벤트를 저널에 남긴다.

@@ -5,5 +5,6 @@
 # 다시 굽히므로, --pull 과 함께 쓰면 빌드할 때마다 최신 OS 패치를 받는다.
 FROM nginxinc/nginx-unprivileged:1.31-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY index.html style.css app.js /usr/share/nginx/html/
+COPY index.html style.css og.png /usr/share/nginx/html/
+COPY js/ /usr/share/nginx/html/js/
 EXPOSE 8080

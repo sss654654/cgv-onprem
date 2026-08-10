@@ -129,4 +129,9 @@ func (p *QueueProcessor) processMovie(ctx context.Context, movieID string) {
 			slog.WarnContext(ctx, "처리율 기록 실패(ETA 정확도만 영향)", "movie", movieID, "err", err)
 		}
 	}
+
+	// 실황 피드(화면용) — 승격은 상태 사실이므로 발행 성공 여부와 무관하게 기록. best-effort.
+	if err := p.rdb.AppendEvents(ctx, movieID, "PROMOTE", admitted, time.Now().UnixMilli()); err != nil {
+		slog.WarnContext(ctx, "실황 기록 실패(표시만 영향)", "movie", movieID, "err", err)
+	}
 }

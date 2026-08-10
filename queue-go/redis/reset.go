@@ -20,6 +20,8 @@ func (c *Client) Reset(ctx context.Context, movieID string, nowSec int64) error 
 		WaitingLastseenKey(movieID),
 		PromotedCountKey(movieID),
 		PendingKey(movieID),
+		EventsKey(movieID),
+		EventsIDKey(movieID),
 	}
 	for i := int64(0); i < rateBucketTTL; i++ {
 		keys = append(keys, RateBucketKey(movieID, nowSec-i))

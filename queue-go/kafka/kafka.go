@@ -259,6 +259,12 @@ func ConsumeCompleted(ctx context.Context, broker string, rdb *redis.Client) {
 				return
 			}
 			slog.InfoContext(sctx, "예매완료 수신 → active 제거", "req", e.RequestID, "removed", removed)
+			// 실황 피드(화면용) — 실제로 자리가 반환됐을 때만. best-effort.
+			if removed {
+				if fErr := rdb.AppendEvents(ctx, e.MovieID, "RETURN", []string{e.RequestID}, time.Now().UnixMilli()); fErr != nil {
+					slog.WarnContext(sctx, "실황 기록 실패(표시만 영향)", "err", fErr)
+				}
+			}
 			commit(ctx, r, m)
 		}()
 	}
