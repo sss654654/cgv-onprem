@@ -29,11 +29,10 @@ type QueueProcessor struct {
 	interval    time.Duration
 	batchSize   int64
 	publisher   AdmissionPublisher
-	rate        *metrics.RateTracker
 }
 
-func NewQueueProcessor(rdb *redis.Client, maxSessions int64, interval time.Duration, batchSize int64, publisher AdmissionPublisher, rate *metrics.RateTracker) *QueueProcessor {
-	return &QueueProcessor{rdb: rdb, maxSessions: maxSessions, interval: interval, batchSize: batchSize, publisher: publisher, rate: rate}
+func NewQueueProcessor(rdb *redis.Client, maxSessions int64, interval time.Duration, batchSize int64, publisher AdmissionPublisher) *QueueProcessor {
+	return &QueueProcessor{rdb: rdb, maxSessions: maxSessions, interval: interval, batchSize: batchSize, publisher: publisher}
 }
 
 // Start = ctx가 취소될 때까지 interval마다 승격을 돈다. goroutine으로 띄워 쓴다.
@@ -89,10 +88,7 @@ func (p *QueueProcessor) processMovie(ctx context.Context, movieID string) {
 		return
 	}
 	if len(admitted) == 0 {
-		if p.rate != nil {
-			p.rate.Observe(movieID, 0, p.interval) // 0명도 관측(rate 감소 → ETA 현실화)
-		}
-		return
+		return // 기록할 승격이 없다. 처리율은 창 전체를 나누므로 빈 구간이 자동으로 반영된다.
 	}
 
 	// 승격자에게 입장 이벤트(Kafka admissions)를 한 번에 발행 — 안 하면 booking이 몰라 403.
@@ -126,8 +122,11 @@ func (p *QueueProcessor) processMovie(ctx context.Context, movieID string) {
 		slog.InfoContext(ctx, "승격·발행", "count", published, "movie", movieID)
 	}
 
-	// rate 관측: 실제로 발행까지 끝난 수만 반영 — 실패분이 ETA를 부풀리지 않게.
-	if p.rate != nil {
-		p.rate.Observe(movieID, published, p.interval)
+	// 처리율 관측: 실제로 발행까지 끝난 수만 기록 — 실패분이 ETA를 낙관적으로 만들지 않게.
+	// 기록처는 Redis 공유 버킷이라 전 파드의 승격이 하나의 처리율로 합쳐진다.
+	if published > 0 {
+		if err := p.rdb.ObservePromotion(ctx, movieID, published, time.Now().Unix()); err != nil {
+			slog.WarnContext(ctx, "처리율 기록 실패(ETA 정확도만 영향)", "movie", movieID, "err", err)
+		}
 	}
 }

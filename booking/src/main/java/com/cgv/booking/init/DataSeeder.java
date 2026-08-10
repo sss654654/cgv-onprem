@@ -41,9 +41,9 @@ public class DataSeeder implements CommandLineRunner {
             log.info("시드 생략(이미 존재). movies={}", movies.count());
             return;
         }
-        // 영화(방송) 1 — 18:00 단일 시각.
-        LocalDateTime at = LocalDate.now().atTime(18, 0);
-        movies.save(new Movie(props.getMovieId(), props.getMovieTitle(), at));
+        // 영화(방송) 1 — 18:00 단일 시각. 시드 시점 기준 미래로 잡는다(고정 날짜면 배포 다음 날부터
+        // 지난 방송이 화면에 남는다). 같은 계산을 초기화(AdminReset)도 쓴다.
+        movies.save(new Movie(props.getMovieId(), props.getMovieTitle(), nextBroadcastAt()));
 
         String[] branches = props.branchList();
         int perBranch = props.getScreensPerBranch();
@@ -68,5 +68,10 @@ public class DataSeeder implements CommandLineRunner {
         }
         seats.saveAll(seatBatch);
         log.info("시드 완료: 영화1 · 회차{} · 좌석{}", scIdx, seatBatch.size());
+    }
+
+    // 다음 방송 시각 = 오늘로부터 7일 뒤 18:00. 시드와 초기화가 같은 값을 쓴다.
+    public static LocalDateTime nextBroadcastAt() {
+        return LocalDate.now().plusDays(7).atTime(18, 0);
     }
 }

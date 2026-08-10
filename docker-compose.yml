@@ -54,6 +54,7 @@ services:
       MAX_SESSIONS: "2"          # 데모용 소정원(2명 즉시입장, 나머지 대기 → 승격 순환이 눈에 보임)
       SESSION_TIMEOUT: "60"      # 데모용 1분(실운영 600=10분). 프론트 카운트다운·좌석락(45s)과 정합.
       OTLP_GRPC_ENDPOINT: "localhost:4317"   # OTel/gRPC 전송처(queue 전용 env — booking의 HTTP와 분리). 로컬 compose엔 collector 없음 → exporter가 lazy 실패(비블로킹). k3s가 실제 Tempo/collector 주입.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-local-dev-reset}   # 초기화 API 인증. 없으면 그 API가 등록되지 않는다. k3s는 Secret 주입.
     ports:
       - "18090:8090"  # 검증용 직노출. 호스트 8090은 Wondershare(WsToastNotification)가 점유해 18090으로 우회(mirrored 모드에서 충돌).
       - "19091:9091"  # /metrics(promauto) 로컬 확인용. k3s에선 노출 안 함(ServiceMonitor만 접근).
@@ -75,6 +76,7 @@ services:
       OTLP_HTTP_ENDPOINT: "http://localhost:4318/v1/traces"   # OTLP/HTTP 전송처(booking 전용 env — Boot 3.3.4는 HTTP만, 4318+/v1/traces). 로컬엔 collector 없음 → lazy 실패(비블로킹). k3s가 실제 endpoint 주입.
       DDL_AUTO: update           # 로컬 단일파드: Hibernate 스키마 자동생성(k3s 멀티팟은 none + 배포 Job).
       SEED_ON_START: "true"      # 로컬 단일파드: DataSeeder 시드 활성(k3s는 false).
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-local-dev-reset}   # queue와 같은 값이어야 초기화가 두 서비스에 함께 걸린다
       VIRTUAL_THREADS: "false"   # 로컬 진단: 가상스레드 원인 격리용(2-2 k3s에선 true)
       JAVA_OPTS: "-XX:MaxRAMPercentage=75 -Djava.net.preferIPv4Stack=true"  # IPv4 바인딩(IPv6 only면 docker-proxy/클라가 못 붙음)
     ports:

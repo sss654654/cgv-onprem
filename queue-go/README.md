@@ -59,8 +59,10 @@ queue는 "누가 입장할 수 있나"(정원·명단·타임아웃)를 소유�
 
 - **enter** (`POST /api/admission/enter`) — 정원 여유면 `ADMITTED`(200), 꽉 차면 `WAITING`(202)+순번. `ADMITTED`일 때만 `admissions`를 발행한다.
 - **position** (`GET /api/admission/position`) — 3-state 판정. `ZSCORE active`(있으면 ADMITTED) → `ZRANK waiting`(있으면 WAITING+순번) → 둘 다 없으면 EXPIRED. active를 먼저 보는 이유는 승격된 사용자가 waiting에서 빠지기 때문이다. 폴링은 `waiting_lastseen`을 갱신하는 생존 신호도 겸한다.
+- **stats** (`GET /api/admission/stats`) — 전체 현황(입장·대기·누적 승격·정원·신규 진입자 예상 대기). 파이프라인 한 왕복 집계, 읽기 전용. 프론트의 현황 타일이 3초마다 부른다.
 - **leave** (`POST /api/admission/leave`) — 자발적 이탈. active·waiting·lastseen에서 전부 제거.
 - **complete** (`POST /api/admission/complete`) — 사용자가 부른 자리 반환. active에서만 제거.
+- **reset** (`POST /api/admission/reset`) — 한 영화의 대기열 상태 전부 삭제(운영용). `X-Admin-Token` 헤더로 검증하며, **`ADMIN_TOKEN`을 주입하지 않은 배포에는 라우트 자체가 등록되지 않는다** — 403을 돌려주는 방식이면 API의 존재가 드러나서다. 예매 기록·좌석 쪽 초기화는 booking의 `/api/admin/reset`이 맡는다.
 
 `leave`·`complete`는 그 사용자가 active였으면 **회수 이벤트를 저널에 남긴다.** 남기지 않으면 booking의 입장 인증이 그대로 남아 정원 밖 사용자가 예매 API를 계속 통과한다.
 
@@ -105,12 +107,16 @@ queue-go/
 │   └── health.go      /health/live · /health/ready(Redis PING)
 ├── redis/             상태 저장 계층 — Lua 스크립트 + go-redis 래퍼
 │   ├── client.go      래퍼(풀·타임아웃)·PoolStats 노출
-│   ├── enter.go       enterScript(정원 확인 + 저널 기록, 원자)
+│   ├── enter.go       enterScript(정원 확인 + 추적 등록 + 저널 기록, 원자)
 │   ├── promote.go     promoteScript(승격 + 저널 기록, 원자)
 │   ├── timeout.go     expireScript / waitingExpireScript(만료 + 회수 저널)
 │   ├── leave.go       leaveScript / releaseScript / CompleteActive
+│   ├── untrack.go     빈 대기열의 추적 Set 해제(원자 — 비었을 때만)
 │   ├── pending.go     저널 조회·정리, 승격 중단 플래그
 │   ├── position.go    3-state 순번 조회(Lua 아님 — 읽기 위주)
+│   ├── rate.go        승격 처리율 — 초 단위 버킷 기록·창(90초) 평균 조회
+│   ├── stats.go       현황 집계(active·waiting·promoted, 파이프라인 1왕복)
+│   ├── reset.go       대기열 초기화(운영용 — 키 계산으로 일괄 삭제, SCAN 없음)
 │   ├── query.go       WaitingCount·ActiveCount·ActiveQueueMovies
 │   └── keys.go        키 빌더
 ├── processor/         백그라운드 루프
@@ -121,7 +127,7 @@ queue-go/
 ├── kafka/kafka.go     admissions·admissions-revoked 발행 · bookings-completed 소비
 └── metrics/
     ├── prom.go        계측 정의 + /metrics 전용 서버 + 샘플러
-    └── rate.go        승격 처리율(EMA) → ETA 재료
+    └── rate.go        RateProvider — Redis 공유 버킷의 창 평균을 짧게 캐시해 ETA·지표에 공급
 ```
 
 원자성이 필요한 연산(정원 확인·승격·만료·이탈)은 Lua로 묶고, 읽기 위주인 position은 개별 명령으로 조립한다. `redis/` 패키지가 go-redis 의존을 가둬 핸들러·프로세서는 래퍼 타입만 참조한다.
@@ -135,7 +141,8 @@ queue-go/
 | `sessions:{movie}:active` | ZSet | 입장 시각(ms) | 정원 안 인원. score로 타임아웃 판정 |
 | `sessions:{movie}:waiting` | ZSet | 진입 순서(ms) | 대기 줄. 순번(ZRANK)·선착순 |
 | `waiting_lastseen:{movie}` | ZSet | 마지막 폴링(ms) | 생존 추적. 이탈 감지 근거 |
-| `promoted_count:{movie}` | counter | INCRBY | 누적 승격 수 → rate·ETA |
+| `promoted_count:{movie}` | counter | INCRBY | 누적 승격 수(현황 표시용) |
+| `promote_rate:{movie}:{unix초}` | counter(TTL) | INCRBY | 초 단위 승격 버킷. 창(90초) 합산 평균 = 처리율 → ETA. TTL로 자멸 |
 | `pending_events:{movie}` | ZSet | 상태변경 시각(ms) | 발행 대기 저널 |
 | `queue:promote_pause` | string(TTL) | "1" | 발행 실패 시 전 파드 공통 승격 중단 |
 | `active_movies` / `waiting_movies` | Set | — | 루프가 돌 대상 영화 추적 |
@@ -234,6 +241,7 @@ docker compose up --build -d
 | `PENDING_SWEEP_INTERVAL` | 5000ms | 저널 스윕 주기 = 회수가 booking에 닿는 최대 지연 |
 | `KAFKA_BROKER` | localhost:9092 | |
 | `OTLP_GRPC_ENDPOINT` | localhost:4317 | Tempo/collector(gRPC) |
+| `ADMIN_TOKEN` | (없음) | 초기화 API 인증. 비어 있으면 그 라우트가 등록되지 않는다 |
 | `GIN_MODE` | release | 텍스트 배너의 JSON 로그 오염 방지 |
 
 `SESSION_TIMEOUT`을 바꾸면 booking의 `ADMITTED_TTL`도 같이 올려야 한다. booking의 인증 TTL이 queue의 세션 수명보다 짧으면 정상 세션이 중간에 인증을 잃는다.
@@ -242,8 +250,7 @@ docker compose up --build -d
 
 ## 알려진 한계
 
-- **멀티팟 미검증**: 승격 중단 플래그와 저널은 파드가 여럿이어도 성립하도록 공유 상태로 두었지만, 실제 다중 replica 동작은 클러스터에서 확인해야 한다. 루프는 모든 파드가 함께 돈다 — 승격 Lua가 정원을 원자로 확인하므로 초과 승격은 안 나지만, 같은 일을 여러 파드가 중복 수행한다.
-- **rate/ETA가 파드별 EMA**: replica가 늘면 파드마다 다른 ETA를 낼 수 있다. 공유 카운터 샘플링으로 바꾸는 것이 남아 있다.
+- **루프 중복 수행**: 백그라운드 루프는 모든 파드가 함께 돈다 — 승격 Lua가 정원을 원자로 확인하므로 초과 승격은 안 나지만, 같은 검사를 여러 파드가 반복한다. (ETA는 값이 Redis 공유 버킷이라 파드가 여럿이어도 같은 값을 읽는다.)
 - **movieId 실재 검증 없음**: 형식 검증(영숫자·`_`·`-`, 최대 64자)은 핸들러에 있지만 영화가 실제 존재하는지는 확인하지 않는다 — 형식에 맞는 임의 movieId로도 대기열 키·추적 등록이 생긴다. 폴링이 끊기면 30초 evict 후 유휴 추적 해제로 자가 정리되지만, 게이지 라벨은 남는다.
 - **테스트 없음**: 자동 테스트가 없다. 검증은 빌드·vet·로컬 E2E까지다.
 - **사이징 미측정**: 파드당 처리 RPS · PoolSize · HPA 임계는 부하테스트로 확정한다.

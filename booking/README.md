@@ -141,6 +141,7 @@ booking/src/main/java/com/cgv/booking/
 │   ├── ScreeningController    GET  /api/screenings     회차 목록+잔여
 │   ├── SeatController         GET  /api/seats · POST /select · /release
 │   ├── BookingController      POST /api/bookings       결제·확정
+│   ├── AdminController        POST /api/admin/reset    데이터 초기화(토큰 배포에만 존재)
 │   └── ApiException(Handler)  도메인 오류 → HTTP 상태(400/403/404/409)
 ├── service/
 │   ├── BookingService         confirm() 오케스트레이션(위 흐름)
@@ -148,6 +149,7 @@ booking/src/main/java/com/cgv/booking/
 │   ├── SeatRequest            좌석 요청 정규화(중복 제거·정렬·개수 상한)
 │   ├── ScreeningService       회차+잔여(판매 group by + 락 인덱스 합산)
 │   ├── SeatService            좌석도(3상태 합성) + 점유/해제
+│   ├── AdminResetService      예매·좌석락·입장인증 삭제 + 방송일 재설정
 │   └── PaymentGateway         PG mock(approve/refund)
 ├── redis/
 │   ├── SeatLockService        좌석락 Lua(LOCK·RELEASE·RENEW) + 회차별 인덱스 Set
@@ -192,7 +194,7 @@ booking/src/main/java/com/cgv/booking/
 ## 도메인 스키마
 
 ```
-movies         (id, title, broadcast_at)                          1행  (생중계 = 영화 1, 18:00)
+movies         (id, title, broadcast_at)                          1행  (생중계 = 영화 1, 방송일 = 시드 시점 +7일 18:00)
 screenings     (id, movie_id, branch, screen_no, total_seats)     20행 (지점 5 × 관 4, 관당 200석)
 seats          (id, screening_id, seat_row, seat_col, seat_no)    4,000행 (구조의 단일 진실원)
 bookings       (id, screening_id, user_id, price, idempotency_key UNIQUE, created_at)
@@ -245,6 +247,7 @@ booking_seats  (id, booking_id, screening_id, seat_no, UNIQUE(screening_id, seat
 | GET | `/api/seats?screeningId&requestId` | 좌석도 200칸(게이트 O) |
 | POST | `/api/seats/select` · `/release` | 좌석 점유 / 해제 |
 | POST | `/api/bookings` | 결제·확정 |
+| POST | `/api/admin/reset` | 예매·좌석락·입장인증 삭제 + 방송일 재설정. `X-Admin-Token` 검증 — **`ADMIN_TOKEN`이 빈 배포에는 컨트롤러 자체가 등록되지 않는다.** 대기열 쪽은 queue의 `/api/admission/reset`이 맡는다 |
 | GET | `/actuator/health/{liveness,readiness}` · `/actuator/prometheus` | 관측(내부 전용) |
 
 로컬은 Redis standalone이다. `redis-sentinel` 프로파일을 켜면 Sentinel 경유로 접속한다.
@@ -265,6 +268,7 @@ booking_seats  (id, booking_id, screening_id, seat_no, UNIQUE(screening_id, seat
 | `SEAT_LOCK_TTL` | 45s | 좌석락 TTL |
 | `ADMITTED_TTL` | 180s | 입장 인증 만료 |
 | `MAX_SEATS_PER_REQUEST` | 8 | 한 요청 좌석 수 상한 |
+| `ADMIN_TOKEN` | (없음) | 초기화 API 인증. 비어 있으면 그 컨트롤러가 등록되지 않는다 |
 | `VIRTUAL_THREADS` | true | 로컬 진단 시 off 가능 |
 | `OTLP_HTTP_ENDPOINT` | http://localhost:4318/v1/traces | Tempo/collector(HTTP) |
 | `DDL_AUTO` / `SEED_ON_START` | none / false | 로컬 단일파드만 update / true |

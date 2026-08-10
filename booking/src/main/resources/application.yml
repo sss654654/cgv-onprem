@@ -67,6 +67,8 @@ spring:
 # 도메인 픽스값 — 시드·가격. env로 덮을 수 있게.
 cgv:
   seed-on-start: ${SEED_ON_START:false}   # 기본 false: DataSeeder 멀티팟 레이스 차단. 로컬 단일파드만 true
+  # 초기화 API(POST /api/admin/reset)의 인증 토큰. 비어 있으면 그 컨트롤러가 아예 등록되지 않는다.
+  admin-token: ${ADMIN_TOKEN:}
   movie-id: kbo-allstar-2025
   movie-title: "2026 KBO 올스타전 생중계"
   price-per-seat: 6000

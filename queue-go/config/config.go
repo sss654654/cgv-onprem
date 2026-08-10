@@ -28,6 +28,9 @@ type Config struct {
 	MetricsPort     string        // /metrics 전용 포트. 인그레스·Service엔 안 물리고 ServiceMonitor만 안다.
 	RedisMasterName    string   // Sentinel master group명(REDIS_SENTINEL_ADDRS 있을 때만 유효). 차트 sentinel.masterSet와 일치.
 	RedisSentinelAddrs []string // Sentinel 주소들(콤마 구분). 비면 standalone(고정 RedisAddr) — 로컬·dev 단일.
+	// AdminToken = 운영용 파괴 API(대기열 초기화)의 인증 토큰. 비어 있으면 그 엔드포인트는
+	// 등록되지 않는다 — 토큰을 주입하지 않은 배포에서는 API 자체가 존재하지 않는다.
+	AdminToken string
 }
 
 // Load는 환경변수에서 설정을 읽는다. REDIS_HOST/REDIS_PORT를 합쳐 Addr로.
@@ -49,6 +52,7 @@ func Load() Config {
 		MetricsPort:     getenv("METRICS_PORT", "9091"),
 		RedisMasterName:    getenv("REDIS_MASTER_NAME", ""),
 		RedisSentinelAddrs: splitAddrs(getenv("REDIS_SENTINEL_ADDRS", "")),
+		AdminToken:         getenv("ADMIN_TOKEN", ""),
 	}
 	// 하한 가드 — batch·정원이 0/음수면 승격 Lua의 전제가 깨짐(promote.go 가드와 이중 방어).
 	if cfg.BatchSize < 1 {

@@ -56,8 +56,9 @@ func main() {
 	// 4) Kafka — 즉시 반환(토픽 보장은 백그라운드). Kafka가 기동을 막지 않는다.
 	kp := kafka.NewProducer(ctx, cfg.KafkaBroker)
 
-	// 5) 승격 처리율(rate) 추적 — 승격 루프가 관측, position 핸들러가 ETA 계산에 사용.
-	rate := metrics.NewRateTracker()
+	// 5) 승격 처리율(rate) 조회 — 승격 루프가 Redis 공유 버킷에 기록, 이쪽은 창 평균을 읽어
+	//    position·stats의 ETA와 지표에 같은 값을 준다.
+	rate := metrics.NewRateProvider(rdb)
 
 	// 5-1) 계측 — 실패 카운터는 kafka atomic을 단일 진실원으로 노출.
 	metrics.RegisterFailureCounters(
@@ -76,7 +77,7 @@ func main() {
 		}()
 	}
 	bg("kafka-consumer", func(c context.Context) { kafka.ConsumeCompleted(c, cfg.KafkaBroker, rdb) })
-	bg("queue-processor", processor.NewQueueProcessor(rdb, cfg.MaxSessions, cfg.QueueInterval, cfg.BatchSize, kp, rate).Start)
+	bg("queue-processor", processor.NewQueueProcessor(rdb, cfg.MaxSessions, cfg.QueueInterval, cfg.BatchSize, kp).Start)
 	bg("session-timeout", processor.NewSessionTimeoutProcessor(rdb, cfg.SessionTimeout, cfg.TimeoutInterval).Start)
 	bg("waiting-timeout", processor.NewWaitingTimeoutProcessor(rdb, cfg.WaitingTimeout, cfg.WaitingInterval).Start)
 	// 발행 대기 저널 스윕 — 상태는 바뀌었는데 Kafka 발행이 끝나지 못한 것을 다시 내보낸다.
@@ -97,7 +98,7 @@ func main() {
 	// 8) 라우트 — 헬스 + 대기열(enter·position·leave·complete).
 	health := handler.NewHealth(rdb)
 	health.Register(r)
-	handler.NewAdmission(rdb, cfg.MaxSessions, kp, rate).Register(r)
+	handler.NewAdmission(rdb, cfg.MaxSessions, kp, rate, cfg.AdminToken).Register(r)
 
 	// 9) HTTP 서버 — r.Run() 대신 http.Server: graceful drain(Shutdown)을 쓰기 위한 교체
 	//    + gin 기본은 타임아웃 무제한이라 명시(판정 ⑤ — 폴링=짧은 요청 전제를 서버가 강제).

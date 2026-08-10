@@ -83,11 +83,9 @@ var poolGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
 // StartSampler = 상태 게이지 갱신 고루틴(파드당 1개, 유저 수 무관).
 // 주기 5s = 폴링 최대 주기와 같은 급 — 상태 스냅샷은 그보다 자주 잴 이유가 없다.
 //
-// rate 배선: 지금은 유저 ETA가 쓰는 값(RateTracker EMA)을 그대로 노출한다 —
-// "하나의 계측, 두 소비처" 일치 원칙. 멀티팟에서 파드별 선이 갈라져 보이는 것은
-// rate 재설계 때 이 소스만 promoted_count 샘플링으로
-// 교체된다(그때 ETA와 지표가 함께 바뀜 — 일치 유지).
-func StartSampler(ctx context.Context, rdb *redis.Client, rate *RateTracker, interval time.Duration) {
+// rate 배선: 유저 ETA가 쓰는 값과 같은 소스(Redis 공유 버킷의 창 평균)를 노출한다 —
+// "하나의 계측, 두 소비처" 일치 원칙. 값이 공유라 파드가 여러 개여도 선이 갈라지지 않는다.
+func StartSampler(ctx context.Context, rdb *redis.Client, rate *RateProvider, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -100,7 +98,7 @@ func StartSampler(ctx context.Context, rdb *redis.Client, rate *RateTracker, int
 	}
 }
 
-func sample(ctx context.Context, rdb *redis.Client, rate *RateTracker) {
+func sample(ctx context.Context, rdb *redis.Client, rate *RateProvider) {
 	// 풀 장부 — go-redis PoolStats를 대시보드 라벨로 매핑:
 	//   in_use = TotalConns − IdleConns / idle = IdleConns / waiting = PendingRequests(지금 커넥션 대기 중인 요청 수)
 	// Total과 Idle은 별도 락으로 순차 샘플링돼 원자 스냅샷이 아니다 — 순간 역전 시 uint32
@@ -126,7 +124,7 @@ func sample(ctx context.Context, rdb *redis.Client, rate *RateTracker) {
 		if n, err := rdb.ActiveCount(ctx, m); err == nil {
 			activeGauge.WithLabelValues(m).Set(float64(n))
 		}
-		rateGauge.WithLabelValues(m).Set(rate.Rate(m))
+		rateGauge.WithLabelValues(m).Set(rate.Rate(ctx, m))
 	}
 }
 

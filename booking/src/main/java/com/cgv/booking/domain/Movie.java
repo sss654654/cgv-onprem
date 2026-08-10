@@ -19,4 +19,8 @@ public class Movie {
     public String getId() { return id; }
     public String getTitle() { return title; }
     public LocalDateTime getBroadcastAt() { return broadcastAt; }
+
+    // 방송 시각 변경 — 초기화가 부른다. 시드는 한 번만 도는데 방송일은 화면에 계속 보이므로,
+    // 초기화 때 다시 미래로 옮기지 않으면 데모가 지난 날짜를 달고 돈다.
+    public void reschedule(LocalDateTime at) { this.broadcastAt = at; }
 }

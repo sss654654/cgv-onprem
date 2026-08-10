@@ -1,16 +1,20 @@
 # cgv-onprem — 폴리글랏 티켓팅 MSA
 
-티켓팅(생중계 좌석 예매) 대기열 시스템. 입장 통제(queue)와 예매(booking)를 서로 다른 언어로 나누고, 둘을 Kafka 이벤트로만 연결해 서비스 간 장애를 격리한다. 온프레미스 k3s 배포를 대상으로 하며, 현재는 로컬 `docker-compose`로 검증하는 단계다.
+티켓팅(생중계 좌석 예매) 대기열 시스템. 입장 통제(queue)와 예매(booking)를 서로 다른 언어로 나누고, 둘을 Kafka 이벤트로만 연결해 서비스 간 장애를 격리한다. 온프레미스 k3s 클러스터(dev)에 GitOps로 배포·운영 중이고, 로컬 검증은 `docker-compose`로 한다.
 
 - **queue** (Go) — 입장 정원·대기 순번·승격. stateless 폴링 대기열
 - **booking** (Java/Spring) — 좌석 선점·결제·확정. 결제·정합성을 다루는 트랜잭션 서비스
-- **frontend** (바닐라 SPA + nginx) — 브라우저 진입점 겸 게이트웨이
+- **frontend** (바닐라 SPA + nginx) — 브라우저 진입점 겸 게이트웨이. 화면은 티케팅 대기열 시뮬레이터다 — 방문자가 가상 관객을 투입해 대기열이 도는 것을 지켜보고 직접 예매까지 해본다
+
+> **이 GitHub 저장소는 읽기용 미러다.** 실제 작업은 로컬 작업 트리와 셀프호스트 GitLab(데스크탑 Docker)에서 하고, GitLab의 push mirroring이 여기로 자동 반영한다. MR·CI 파이프라인·컨테이너 레지스트리는 GitLab 쪽에 있어 이 저장소에는 결과(커밋)만 보인다.
+>
+> 인프라(k3s·GitOps·관측)는 [cgv-infra](https://github.com/sss654654/cgv-infra), 구축 과정 기록은 [블로그 연재](https://zed6740.tistory.com/category/Kubernetes)에 있다.
 
 ---
 
 ## 배경
 
-KBO 야구의 온라인 예매가 폭주해 예매 서버가 수요를 받아내지 못한 실제 사건을 모델로 한다. 보도·후기에 따르면 예매 버튼이 활성화되지도 못한 채 대기 인원이 16만 명에 이르렀고, 좌석은 몇 분 만에 전량 매진됐다. 추측컨데 원인은 "대기열·용량 산정 부실 → 수요가 백엔드를 직격"한 것이다. (기업의 공식 장애 발표는 없어 정황은 후기·보도로 확인된다.) 이에 CGV가 극장에서 야구 생중계 예매 서비스를 지원하기로 했다.
+KBO 야구의 온라인 예매가 폭주해 예매 서버가 수요를 받아내지 못한 실제 사건을 모델로 한다. 보도·후기에 따르면 예매 버튼이 활성화되지도 못한 채 대기 인원이 16만 명에 이르렀고, 좌석은 몇 분 만에 전량 매진됐다. 추측건대 원인은 "대기열·용량 산정 부실 → 수요가 백엔드를 직격"한 것이다. (기업의 공식 장애 발표는 없어 정황은 후기·보도로 확인된다.) 이에 CGV가 극장에서 야구 생중계 예매 서비스를 지원하기로 했다.
 
 
 이 사건을 축소한 구성이며, 아래 세 가지로 이뤄진다.
@@ -42,12 +46,13 @@ KBO 야구의 온라인 예매가 폭주해 예매 서버가 수요를 받아내
                         ┌───▼────────▼───┐
                         │      Kafka      │
                         │  admissions ───────▶  (queue → booking : 입장 승인)
+                        │  admissions-revoked ▶ (queue → booking : 입장 회수)
                         │  ◀─── bookings-completed  (booking → queue : 자리 반환)
                         └────────────────┘        booking → MySQL (확정 예매)
 ```
 
 - **게이트웨이가 경로로 서비스를 나눈다**: 브라우저는 한 주소만 보고, `/api/admission/*`은 queue, 나머지 `/api/*`은 booking으로 간다.
-- **Kafka 두 토픽이 닫힌 순환을 이룬다**: queue가 승격하면 `admissions`로 알리고(booking이 입장 인증 채움), booking이 예매를 끝내면 `bookings-completed`로 알린다(queue가 자리 반환). 직접 호출이 없어 한쪽이 죽어도 다른 쪽으로 전파되지 않는다.
+- **Kafka 토픽이 닫힌 순환을 이룬다**: queue가 승격하면 `admissions`로 알리고(booking이 입장 인증 채움), booking이 예매를 끝내면 `bookings-completed`로 알린다(queue가 자리 반환). 자리를 거둘 때는 `admissions-revoked`로 인증을 지운다. 직접 호출이 없어 한쪽이 죽어도 다른 쪽으로 전파되지 않는다.
 - **저장소가 성격을 가른다**: queue는 휘발성 큐라 Redis만, booking은 영속 정합성이라 MySQL(확정) + Redis(임시 점유).
 
 ---
@@ -107,11 +112,12 @@ docker compose up --build -d      # redis · mysql · kafka · queue · booking 
 
 ## 현재 상태
 
-- **로컬 검증 완료**: 6개 컨테이너로 닫힌 순환(go → Kafka → java → Kafka → go)을 curl 왕복으로 확인. queue·booking Docker 빌드 통과.
-- **관측 배선 완료(코드)**: metric·log·trace 세 축이 세 서비스에 들어가 있으나, 수집·저장 스택(LGTM)은 아직 없어 로컬에선 흐르지 않는다.
-- **다음(k3s)**: 클러스터 배포·오토스케일·관측 스택·부하테스트. 매니페스트·차트는 별도 GitOps repo에서 관리한다.
+- **k3s dev 클러스터에서 운영 중**: push → GitLab CI 5단 게이트(check·test·build·scan·publish) → 불변 태그(`dev-<파이프라인>-<커밋>`) 이미지 → argocd-image-updater가 태그를 GitOps 저장소에 write-back → Argo CD 롤아웃. 배포 선언·클러스터 구성은 [cgv-infra](https://github.com/sss654654/cgv-infra)에 있다.
+- **관측**: metric·log·trace 세 축이 세 서비스에 계측돼 있고, 클러스터의 LGTM 스택(Mimir·Loki·Tempo + Alloy·Grafana)으로 흐른다. 로컬 compose에는 수집 스택이 없어 exporter가 조용히 쉰다.
+- **노출은 LAN까지**: 인터넷 공개는 인증·TLS·rate limit을 갖춘 뒤다. 대기열·예매 API가 무인증이라 그 전에 열면 정원 점유·데이터 오염에 무방비다.
+- **다음**: 자동 테스트(CI의 빈 test 게이트 채우기) → NetworkPolicy·RBAC → 부하 실측으로 정원·리소스 확정.
 
-배포 시 되돌릴 데모값: `MAX_SESSIONS` 2 → 측정값 · `SESSION_TIMEOUT` 60 → 600 · `SEAT_LOCK_TTL` 45 → 300 · `VIRTUAL_THREADS` false → true.
+배포 시 되돌릴 데모값: `MAX_SESSIONS` 2 → 측정값 · `SESSION_TIMEOUT` 60 → 600 · `SEAT_LOCK_TTL` 45 → 300.
 
 ---
 

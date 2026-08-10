@@ -44,18 +44,59 @@ type Admission struct {
 	rdb         *redis.Client
 	maxSessions int64
 	publisher   AdmissionPublisher
-	rate        *metrics.RateTracker
+	rate        *metrics.RateProvider
+	adminToken  string
 }
 
-func NewAdmission(rdb *redis.Client, maxSessions int64, publisher AdmissionPublisher, rate *metrics.RateTracker) *Admission {
-	return &Admission{rdb: rdb, maxSessions: maxSessions, publisher: publisher, rate: rate}
+func NewAdmission(rdb *redis.Client, maxSessions int64, publisher AdmissionPublisher, rate *metrics.RateProvider, adminToken string) *Admission {
+	return &Admission{rdb: rdb, maxSessions: maxSessions, publisher: publisher, rate: rate, adminToken: adminToken}
 }
 
 func (a *Admission) Register(r *gin.Engine) {
 	r.POST("/api/admission/enter", a.enter)
 	r.GET("/api/admission/position", a.position)   // 폴링 순번 조회
+	r.GET("/api/admission/stats", a.stats)         // 전체 현황 집계(시뮬레이터 화면용, 읽기 전용)
 	r.POST("/api/admission/leave", a.leave)        // 대기열 이탈(active·waiting 제거)
 	r.POST("/api/admission/complete", a.complete)  // active 종료 → 자리 반환
+	// 대기열 초기화 — 토큰을 주입한 배포에만 존재한다. 라우트를 조건부로 다는 이유:
+	// 토큰이 없을 때 핸들러가 403을 주는 방식이면 "그 API가 있다"는 사실 자체가 남는다.
+	if a.adminToken != "" {
+		r.POST("/api/admission/reset", a.reset)
+	}
+}
+
+// requireAdmin = X-Admin-Token 검사. 통과 못 하면 응답을 쓰고 false.
+// 상수시간 비교까지 갈 값은 아니지만(토큰 길이가 고정이 아님), 실패 응답에 이유를 남기지 않는다.
+func (a *Admission) requireAdmin(c *gin.Context) bool {
+	if a.adminToken == "" || c.GetHeader("X-Admin-Token") != a.adminToken {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return false
+	}
+	return true
+}
+
+// reset = POST /api/admission/reset. 한 영화의 대기열 상태를 비운다.
+// 데모가 오래 돌아 숫자가 쌓였을 때 되돌리는 경로 — 예매 기록·좌석은 booking 쪽 리셋이 맡는다.
+func (a *Admission) reset(c *gin.Context) {
+	if !a.requireAdmin(c) {
+		return
+	}
+	var req struct {
+		MovieID string `json:"movieId" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "movieId는 필수입니다"})
+		return
+	}
+	if rejectInvalidIDs(c, req.MovieID) {
+		return
+	}
+	if err := a.rdb.Reset(c.Request.Context(), req.MovieID, time.Now().Unix()); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+	slog.WarnContext(c.Request.Context(), "대기열 초기화 실행", "movie", req.MovieID)
+	c.JSON(http.StatusOK, gin.H{"status": "RESET", "movieId": req.MovieID})
 }
 
 // enterRequest = movieId + requestId(클라 생성 UUID, localStorage 지속).
@@ -164,10 +205,40 @@ func (a *Admission) position(c *gin.Context) {
 		resp.Behind = res.Behind
 		resp.EtaSeconds = -1
 		if a.rate != nil {
-			resp.EtaSeconds = a.rate.ETASeconds(movieID, res.Position)
+			resp.EtaSeconds = a.rate.ETASeconds(c.Request.Context(), movieID, res.Position)
 		}
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// stats = GET /api/admission/stats?movieId=
+// 시뮬레이터 화면의 전체 현황(입장 n/정원 · 대기 n · 누적 승격). 상태를 바꾸지 않는다.
+func (a *Admission) stats(c *gin.Context) {
+	movieID := c.Query("movieId")
+	if movieID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "movieId 필수"})
+		return
+	}
+	if rejectInvalidIDs(c, movieID) {
+		return
+	}
+	active, waiting, promoted, err := a.rdb.Stats(c.Request.Context(), movieID)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+	// etaNext = 지금 새로 들어오는 사람의 예상 대기(대기열 끝 순번 기준). rate 미형성이면 -1.
+	etaNext := int64(-1)
+	if a.rate != nil {
+		etaNext = a.rate.ETASeconds(c.Request.Context(), movieID, waiting+1)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"active":         active,
+		"waiting":        waiting,
+		"promotedTotal":  promoted,
+		"capacity":       a.maxSessions,
+		"etaNextSeconds": etaNext,
+	})
 }
 
 // idRequest = leave/complete 공용 요청(movieId+requestId).
