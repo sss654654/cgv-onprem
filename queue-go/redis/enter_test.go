@@ -16,9 +16,12 @@ import (
 //
 // 순차로 부르는 검사는 어떤 구현이든 통과하므로 회귀를 잡지 못한다. 동시에 출발시켜야 한다.
 
-// newTestClient = 테스트용 Redis 연결. 닿지 않으면 실패가 아니라 건너뛴다 —
-// Redis 없이 `go test ./...`를 돌리는 개발 중 실행이 빨간불이 되지 않게.
-// CI에서는 서비스 컨테이너가 붙어 있어 항상 실행된다.
+// newTestClient = 테스트용 Redis 연결.
+//
+// 개발 중 실행에서는 Redis가 없으면 건너뛴다 — Redis를 안 띄우고 `go test ./...`를 부르는
+// 것이 빨간불이 되지 않게. 반대로 CI에서는 서비스 컨테이너가 반드시 붙어 있어야 하므로,
+// 닿지 않으면 건너뛰지 않고 실패시킨다. 조용히 건너뛴 테스트는 통과로 보이면서 아무것도
+// 지키지 않는다 — 게이트가 게이트가 아니게 되는 경로다.
 func newTestClient(t *testing.T) *Client {
 	t.Helper()
 	addr := os.Getenv("REDIS_ADDR")
@@ -29,6 +32,9 @@ func newTestClient(t *testing.T) *Client {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := c.Ping(ctx); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("CI에서 Redis(%s)에 닿지 못했다 — 서비스 컨테이너 배선을 확인한다: %v", addr, err)
+		}
 		t.Skipf("Redis(%s)에 닿지 않아 건너뛴다: %v", addr, err)
 	}
 	return c
