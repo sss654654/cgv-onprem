@@ -1,7 +1,11 @@
 // 서버가 정본인 두 가지를 화면에 붙인다 — 전체 현황(숫자)과 실황(이벤트).
 // 둘 다 읽기 전용이고, 어느 방문자가 열어도 같은 값을 본다.
+//
+// 둘 다 화면에 보이는 동안만 부른다. 대기·좌석·결제 화면으로 넘어가면 이 값들은
+// 화면에서 사라지는데, 그때도 계속 부르면 대기 중인 사용자 한 명이 안 보는 데이터를
+// 3초마다 두 번씩 받아 간다. 대기 인원이 많을수록 그 몫이 그대로 곱해진다.
 
-import { S, $, api, fmtEta, feedLog, effectiveGate } from './core.js';
+import { S, $, api, fmtEta, feedLog, effectiveGate, onScreen } from './core.js';
 
 const POLL_MS = 3000;
 const STALE_AFTER = 3;   // 연속 실패가 이만큼 쌓이면 화면 값이 낡았다고 표시한다
@@ -9,9 +13,17 @@ const STALE_AFTER = 3;   // 연속 실패가 이만큼 쌓이면 화면 값이 �
 let fails = 0;
 let prevVals = [];
 
+// 전체 현황 타일은 screen-movies 안에 있다 — 다른 화면에서는 그릴 자리가 없다.
+const statsVisible = () => onScreen('movies');
+// 실황 피드는 시뮬레이터 콘솔 안에 있다 — 접으면 보이지 않는다.
+const feedVisible = () => {
+  const body = $('conBody');
+  return !!body && !body.classList.contains('hidden');
+};
+
 // ================= 전체 현황 =================
 export async function pollStats() {
-  if (!S.simMovieId) return;
+  if (!S.simMovieId || !statsVisible()) return;
   const { ok, data } = await api(`/api/admission/stats?movieId=${encodeURIComponent(S.simMovieId)}`);
   const bar = $('statsBar');
   if (!ok || !data) {
@@ -64,7 +76,7 @@ const EVENT_TEXT = {
 };
 
 export async function pollEvents() {
-  if (!S.simMovieId) return;
+  if (!S.simMovieId || !feedVisible()) return;
   const { ok, data } = await api(`/api/admission/events?movieId=${encodeURIComponent(S.simMovieId)}&after=${S.lastEventId}`);
   if (!ok || !data) return;
   // 데이터 초기화로 서버 피드가 비면 id가 뒤로 간다 — 커서를 버리고 처음부터 다시 받는다.
@@ -82,4 +94,7 @@ export async function pollEvents() {
 export function startLivePolling() {
   setInterval(pollStats, POLL_MS);
   setInterval(pollEvents, POLL_MS);
+  // 다시 보이게 된 순간에 한 번 당겨 온다 — 다음 틱까지 3초 동안 낡은 값이 남지 않게.
+  document.addEventListener('screen:changed', () => { if (statsVisible()) pollStats(); });
+  document.addEventListener('console:toggled', (e) => { if (e.detail) pollEvents(); });
 }

@@ -379,6 +379,8 @@ export function initConsole() {
     toggle.textContent = open ? '접기' : '펴기';
     toggle.setAttribute('aria-expanded', String(open));
     store.set(K.CONSOLE, open ? '1' : '0');
+    // 접혀 있는 동안 실황 폴링이 멈춘다(live.js) — 펴는 즉시 한 번 받아 온다.
+    document.dispatchEvent(new CustomEvent('console:toggled', { detail: open }));
   };
   toggle.onclick = () => setOpen(body.classList.contains('hidden'));
   setOpen(store.get(K.CONSOLE) !== '0');

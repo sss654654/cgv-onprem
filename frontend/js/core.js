@@ -53,6 +53,8 @@ const ACTIVE_SCREENS = ['entering', 'screenings', 'seats', 'pay'];   // 세션 �
 export function show(name) {
   SCREENS.forEach(s => $('screen-' + s).classList.toggle('hidden', s !== name));
   $('activeTimer').classList.toggle('hidden', !(ACTIVE_SCREENS.includes(name) && S.activeUntil));
+  // 화면에 따라 도는 폴링이 달라진다(live.js) — 돌아온 화면이 3초를 기다리지 않게 알린다.
+  document.dispatchEvent(new CustomEvent('screen:changed', { detail: name }));
 }
 export const onScreen = (name) => !$('screen-' + name).classList.contains('hidden');
 
