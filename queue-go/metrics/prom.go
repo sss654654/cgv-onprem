@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"strconv"
 	"time"
 
@@ -117,7 +118,9 @@ func sample(ctx context.Context, rdb *redis.Client, rate *RateProvider) {
 		slog.WarnContext(ctx, "metrics sampler: 영화 목록 조회 실패", "err", err)
 		return
 	}
+	cur := make(map[string]struct{}, len(movies))
 	for _, m := range movies {
+		cur[m] = struct{}{}
 		if n, err := rdb.WaitingCount(ctx, m); err == nil {
 			waitingGauge.WithLabelValues(m).Set(float64(n))
 		}
@@ -126,13 +129,41 @@ func sample(ctx context.Context, rdb *redis.Client, rate *RateProvider) {
 		}
 		rateGauge.WithLabelValues(m).Set(rate.Rate(ctx, m))
 	}
+
+	// 추적 목록에서 빠진 영화의 게이지를 지운다.
+	// 안 지우면 마지막 값이 그대로 남아, 줄이 빈 뒤에도 화면이 "대기 402명"을 계속 보여준다
+	// (게이지는 갱신하지 않으면 직전 값을 유지한다). 0으로 내리는 방법도 있으나 그러면
+	// 지나간 영화만큼 시리즈가 영구히 쌓여, 추적 해제로 카디널리티를 줄이려던 목적이 무너진다.
+	// 시리즈가 사라져 화면이 비는 것은 대시보드 쿼리의 `or vector(0)`이 받는다.
+	for m := range trackedMovies {
+		if _, ok := cur[m]; ok {
+			continue
+		}
+		waitingGauge.DeleteLabelValues(m)
+		activeGauge.DeleteLabelValues(m)
+		rateGauge.DeleteLabelValues(m)
+	}
+	trackedMovies = cur
 }
+
+// trackedMovies = 직전 tick에서 추적 중이던 영화. sample()은 단일 고루틴에서만
+// 호출되므로(StartSampler의 ticker 루프) 별도 동기화가 필요 없다.
+var trackedMovies = map[string]struct{}{}
 
 // ServeMetrics = /metrics 전용 서버. 앱 포트(8090)와 분리 — 라우팅 실수로 지표가 샐
 // 자리를 구조적으로 제거. 반환된 서버는 main의 graceful 경로에서 닫는다.
+//
+// /debug/pprof 도 이 포트에만 연다. 지표는 총량만 알려주고 그 안에 무엇이 들었는지는
+// 말하지 않는다 — 힙이 26MiB 라는 것은 알아도 그중 무엇이 얼마인지는 pprof 로만 본다.
+// 앱 포트에 열면 인그레스를 통해 밖에서 스택·힙 상태에 닿을 수 있으므로 여기에만 둔다.
 func ServeMetrics(port string) *http.Server {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	srv := &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 3 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
