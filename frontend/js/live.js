@@ -16,7 +16,14 @@ let prevVals = [];
 // 전체 현황 타일은 screen-movies 안에 있다 — 다른 화면에서는 그릴 자리가 없다.
 const statsVisible = () => onScreen('movies');
 // 실황 피드는 시뮬레이터 콘솔 안에 있다 — 접으면 보이지 않는다.
+// 콘솔은 screen-movies 안에 있어 다른 화면으로 넘어가면 같이 가려지는데, show()가
+//   섹션에만 hidden을 걸고 conBody 자신의 클래스는 안 건드린다. 그래서 conBody만 보면
+//   대기 화면에서도 계속 true가 나와 폴링이 멈추지 않았다.
+//   대기자 1,000명이면 그 몫이 초당 약 333건이고, 그것도 목록 100건을 통째로 읽는
+//   가장 무거운 경로다 — 대기 화면에는 그릴 자리가 없는데 받아 오기만 한다.
+// 화면 조건을 같이 본다: 전체 현황과 같은 기준(screen-movies)에 콘솔 펼침을 더한다.
 const feedVisible = () => {
+  if (!onScreen('movies')) return false;
   const body = $('conBody');
   return !!body && !body.classList.contains('hidden');
 };

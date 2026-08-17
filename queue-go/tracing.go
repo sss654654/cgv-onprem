@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 
 	"go.opentelemetry.io/otel"
@@ -44,10 +45,27 @@ func initTracer(ctx context.Context) (func(context.Context) error, error) {
 		return nil, err
 	}
 
+	// 샘플링 비율. 기본 1.0 — 데모에서 요청 하나가 어디까지 갔는지 전부 보려는 값이고
+	//   booking 의 sampling.probability=1.0 과 짝이다.
+	// 부하 판에서는 내려야 한다. 사용자 1,000명 판이 약 9만 span 인데, Tempo 가 20일 동안
+	//   받은 누적이 35,021 span 이다 — 판 한 번이 그 2.5배를 5분에 쏟는다.
+	// 값이 1 미만이면 부모 판단을 따르는 비율 샘플러를 쓴다(같은 트레이스가 중간에
+	//   끊기지 않게). 잘못된 값이면 1.0 으로 둔다.
+	ratio := 1.0
+	if v := os.Getenv("OTEL_TRACES_SAMPLER_ARG"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
+			ratio = f
+		}
+	}
+	sampler := sdktrace.AlwaysSample()
+	if ratio < 1.0 {
+		sampler = sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
+	}
+
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp),
 		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sdktrace.AlwaysSample()), // 데모 1.0(booking sampling.probability=1.0과 동일)
+		sdktrace.WithSampler(sampler),
 	)
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(

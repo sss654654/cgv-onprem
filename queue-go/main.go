@@ -65,6 +65,8 @@ func main() {
 		func() float64 { return float64(kafka.PublishFailures.Load()) },
 		func() float64 { return float64(kafka.ConsumeFailures.Load()) },
 	)
+	// 풀 누적 카운터 — 5초 게이지가 못 잡는 대기·타임아웃을 누적으로 남긴다.
+	metrics.RegisterPoolCounters(rdb)
 
 	// 6) 배경 고루틴 4개 — runGuarded로 panic 격리·재시작.
 	//    gin.Recovery()는 HTTP 핸들러만 지키고 이쪽은 못 지키므로 별도 래퍼가 필요.

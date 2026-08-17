@@ -21,10 +21,18 @@ import (
 
 // ── 행1: 유저가 지금 겪는 것 ──────────────────────────────────────────
 // RPS(count 증가율)·p99(분위수)·에러율(status 라벨)이 전부 이 하나에서 파생된다.
+// 버킷: 기본값(DefBuckets)의 첫 칸이 5ms인데 폴링 응답이 2-5ms라 분위수가 전부 첫 칸
+//   안에 들어갔다. 그러면 histogram_quantile이 0과 0.005 사이를 선형보간해 p50 0.0025 ·
+//   p99 0.005를 상수로 내놓는다 — 실측(2026-08-13·08-14 부하 판) 전 구간이 그 값이었다.
+//   앞쪽에 0.001·0.0025를 넣어 그 구간을 갈랐다. 뒤쪽은 기본값 그대로 10초까지.
+// 시리즈 비용: 경로 7 × status 종류 × 버킷 수. 버킷이 11 → 13이라 경로당 2 시리즈씩 는다.
 var httpDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-	Name:    "queue_http_request_duration_seconds",
-	Help:    "HTTP 요청 처리시간 — 심판(RPS·p99·에러율 파생)",
-	Buckets: prometheus.DefBuckets,
+	Name: "queue_http_request_duration_seconds",
+	Help: "HTTP 요청 처리시간 — 심판(RPS·p99·에러율 파생)",
+	Buckets: []float64{
+		0.001, 0.0025, 0.005, 0.01, 0.025, 0.05,
+		0.1, 0.25, 0.5, 1, 2.5, 5, 10,
+	},
 }, []string{"path", "status"})
 
 // GinMiddleware = 전 핸들러 공통 스톱워치 한 장(회사 promauto http의 재현).
@@ -80,6 +88,30 @@ var poolGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "queue_redis_pool",
 	Help: "Redis 커넥션 풀 — PoolSize 값의 근거이자 범인 '기다려서'"},
 	[]string{"state"})
+
+// RegisterPoolCounters는 풀 누적 카운터 셋을 등록한다. main에서 한 번 부른다.
+//
+// 위 게이지는 5초마다 찍는 순간값이라 왕복 1ms짜리 대기를 못 잡는다 — 실측(2026-08-14,
+//   대기 998명)에서 in_use와 waiting이 전 구간 0이었다. "안 기다렸다"가 아니라 못 본 것이다.
+// go-redis가 이미 세고 있는 누적값을 그대로 내보낸다. 누적이라 샘플 사이에 일어난 사건도
+//   남으므로, 풀이 좁은지는 이 셋으로만 판정된다.
+// CounterFunc로 두면 스크레이프 시점에 읽어 샘플러 주기와 무관하게 최신값이 나온다.
+func RegisterPoolCounters(rdb *redis.Client) {
+	promauto.NewCounterFunc(prometheus.CounterOpts{
+		Name: "queue_redis_pool_wait_count_total",
+		Help: "커넥션을 기다린 요청 누적 건수 — 0이 아니면 풀이 한 번이라도 말랐다",
+	}, func() float64 { return float64(rdb.PoolStats().WaitCount) })
+
+	promauto.NewCounterFunc(prometheus.CounterOpts{
+		Name: "queue_redis_pool_wait_seconds_total",
+		Help: "커넥션을 기다린 시간 누적(초) — wait_count로 나누면 평균 대기 시간",
+	}, func() float64 { return float64(rdb.PoolStats().WaitDurationNs) / 1e9 })
+
+	promauto.NewCounterFunc(prometheus.CounterOpts{
+		Name: "queue_redis_pool_timeouts_total",
+		Help: "풀 대기가 타임아웃으로 끝난 누적 건수 — 0이 아니면 풀 크기가 상한이다",
+	}, func() float64 { return float64(rdb.PoolStats().Timeouts) })
+}
 
 // StartSampler = 상태 게이지 갱신 고루틴(파드당 1개, 유저 수 무관).
 // 주기 5s = 폴링 최대 주기와 같은 급 — 상태 스냅샷은 그보다 자주 잴 이유가 없다.
