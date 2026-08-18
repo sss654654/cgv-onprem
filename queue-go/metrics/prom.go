@@ -58,7 +58,21 @@ var (
 		Name: "queue_active", Help: "입장(active) 인원 — 정원 소진율의 분자"}, []string{"movie"})
 	rateGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "queue_promotion_rate", Help: "초당 승격 수 — 유저 ETA에 쓰는 그 값(두 소비처 일치)"}, []string{"movie"})
+
+	// 누적 승격 수. 위 세 값은 순간값이라 "이 구간에 몇 명이 줄을 통과했나"를 못 센다.
+	// 승격은 HTTP 요청이 아니라 배경 루프가 하므로 요청 지표로도 셀 수 없다.
+	// rate 게이지를 시간으로 적분하는 방법은 스크레이프 간격에 따라 값이 달라져 못 쓴다.
+	promotedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "queue_promoted_total", Help: "승격 누적 인원 — 구간 통과 인원은 increase()로 낸다"},
+		[]string{"movie"})
 )
+
+// Promoted = 승격이 실제로 일어난 인원수를 더한다. Lua가 승격을 끝내고 명단을 돌려준 뒤 호출한다.
+func Promoted(movieID string, n int) {
+	if n > 0 {
+		promotedTotal.WithLabelValues(movieID).Add(float64(n))
+	}
+}
 
 // ── 행3: 겉으로 안 보이는 백그라운드 체인 ─────────────────────────────
 var loopLastTick = promauto.NewGaugeVec(prometheus.GaugeOpts{

@@ -90,6 +90,7 @@ func (p *QueueProcessor) processMovie(ctx context.Context, movieID string) {
 	if len(admitted) == 0 {
 		return // 기록할 승격이 없다. 처리율은 창 전체를 나누므로 빈 구간이 자동으로 반영된다.
 	}
+	metrics.Promoted(movieID, len(admitted)) // 누적 통과 인원 — 순간값 셋으로는 못 세는 값
 
 	// 승격자에게 입장 이벤트(Kafka admissions)를 한 번에 발행 — 안 하면 booking이 몰라 403.
 	// 건별 발행은 Writer 배치 타이머를 건마다 기다려 배치가 통째로 느려진다.
