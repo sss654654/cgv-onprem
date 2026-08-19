@@ -65,6 +65,9 @@ var (
 	promotedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "queue_promoted_total", Help: "승격 누적 인원 — 구간 통과 인원은 increase()로 낸다"},
 		[]string{"movie"})
+
+	capacityGauge = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "queue_capacity", Help: "입장 정원(MAX_SESSIONS) — 소진율의 분모"})
 )
 
 // Promoted = 승격이 실제로 일어난 인원수를 더한다. Lua가 승격을 끝내고 명단을 돌려준 뒤 호출한다.
@@ -73,6 +76,11 @@ func Promoted(movieID string, n int) {
 		promotedTotal.WithLabelValues(movieID).Add(float64(n))
 	}
 }
+
+// SetCapacity — 기동 시 한 번. 설정값이라 도중에 바뀌지 않는다.
+// 지표로 내는 이유: 정원은 대시보드에서 소진율의 분모이자 계단 판의 축인데, 상수로 적어 두면
+// 계단을 올릴 때마다 화면을 같이 고쳐야 하고 안 고치면 앞 계단 기준으로 읽힌다.
+func SetCapacity(n int64) { capacityGauge.Set(float64(n)) }
 
 // ── 행3: 겉으로 안 보이는 백그라운드 체인 ─────────────────────────────
 var loopLastTick = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -95,6 +103,30 @@ func RegisterFailureCounters(publish, consume func() float64) {
 	promauto.NewCounterFunc(prometheus.CounterOpts{
 		Name: "queue_kafka_consume_failures_total",
 		Help: "completed 처리 실패(미커밋) 누적 — 자리 반납 막힘"}, consume)
+}
+
+// ── Kafka 왕복: booking 이 예매를 확정한 시각부터 자리가 실제로 빈 시각까지 ─────
+//
+// 회전 속도(정원 ÷ 체류 시간)에 이 구간이 통째로 들어간다. 발행 건수와 소비 건수는 각각
+//   지표로 나오지만 둘이 같아도 이 구간이 늘어났는지는 알 수 없다 — 한 건이 건너오는 데
+//   걸린 시간은 어느 지표에도 없다.
+// 경계는 queue_http_request_duration_seconds 와 같은 눈금(뒤쪽 절반)이다.
+var completedLag = promauto.NewHistogram(prometheus.HistogramOpts{
+	Name: "queue_completed_lag_seconds",
+	Help: "예매 확정 발행(booking) → 자리 반환 처리(queue) 지연",
+	Buckets: []float64{
+		0.001, 0.0025, 0.005, 0.01, 0.025, 0.05,
+		0.1, 0.25, 0.5, 1, 2.5, 5, 10,
+	},
+})
+
+// ObserveCompletedLag — 메시지의 발행 시각과 지금의 차. 발행 시각은 카프카 레코드
+// 타임스탬프(기본 CreateTime)라 booking 파드의 시계로 찍힌다 — 두 노드의 시계 차이가
+// 그대로 오차로 섞인다. 시계가 역전돼 음수가 나오면 지연이 아니라 잡음이므로 버린다.
+func ObserveCompletedLag(d time.Duration) {
+	if d >= 0 {
+		completedLag.Observe(d.Seconds())
+	}
 }
 
 // ── 행4 · 자원: 심는 것은 풀뿐(CPU·스로틀·메모리는 cAdvisor 공짜) ─────────────

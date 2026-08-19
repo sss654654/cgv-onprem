@@ -13,6 +13,7 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 	"go.opentelemetry.io/otel"
 
+	"cgv-onprem/queue-go/metrics"
 	"cgv-onprem/queue-go/redis"
 )
 
@@ -258,6 +259,8 @@ func ConsumeCompleted(ctx context.Context, broker string, rdb *redis.Client) {
 				slog.ErrorContext(sctx, "completeActive 실패(미커밋 — 재전달 대상)", "count", n, "req", e.RequestID, "movie", e.MovieID, "err", err)
 				return
 			}
+			// 자리가 실제로 빈 뒤에 잰다 — 발행부터 여기까지가 회전 속도에 들어가는 구간이다.
+			metrics.ObserveCompletedLag(time.Since(m.Time))
 			slog.InfoContext(sctx, "예매완료 수신 → active 제거", "req", e.RequestID, "removed", removed)
 			// 실황 피드(화면용) — 실제로 자리가 반환됐을 때만. best-effort.
 			if removed {

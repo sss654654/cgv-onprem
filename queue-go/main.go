@@ -67,6 +67,8 @@ func main() {
 	)
 	// 풀 누적 카운터 — 5초 게이지가 못 잡는 대기·타임아웃을 누적으로 남긴다.
 	metrics.RegisterPoolCounters(rdb)
+	// 정원 — 대시보드에서 소진율의 분모다. 설정값을 그대로 낸다.
+	metrics.SetCapacity(cfg.MaxSessions)
 
 	// 6) 배경 고루틴 4개 — runGuarded로 panic 격리·재시작.
 	//    gin.Recovery()는 HTTP 핸들러만 지키고 이쪽은 못 지키므로 별도 래퍼가 필요.

@@ -20,7 +20,13 @@ WORKDIR /app
 # 와일드카드로 받는다. 파일명을 고정하면 pom.xml의 version을 올릴 때마다 이 줄이 깨진다.
 COPY --from=build /app/target/*.jar app.jar
 # 최소 권한: 비루트 실행 — runAsNonRoot 정책 충족(root면 기동 실패).
-RUN useradd -r -u 1001 spring
+# /usr/bin/pebble 은 베이스 이미지가 담고 있는 9.5MB 바이너리다. 이 이미지 안에서 그것을
+#   참조하는 곳이 없고(베이스 엔트리포인트·/etc·/opt·/usr/local 모두 0건), 우리 ENTRYPOINT 는
+#   java 를 직접 띄운다 — 실행될 경로가 없다.
+#   지우지 않으면 그 바이너리에 컴파일된 Go 표준 라이브러리의 취약점을 이미지 스캔이 잡아
+#   파이프라인이 멈춘다. 업스트림이 고쳐진 Go 로 다시 빌드하면 이 줄은 없어도 된다.
+RUN rm -f /usr/bin/pebble \
+ && useradd -r -u 1001 spring
 USER 1001
 # 컨테이너 메모리 한도에 힙 맞춤(cgroup 인식). PORT는 compose/k8s가 주입.
 ENV JAVA_OPTS="-XX:MaxRAMPercentage=75"

@@ -101,6 +101,15 @@ management:
   metrics:
     tags:
       application: cgv-booking
+    distribution:
+      # 버킷 없이는 히스토그램이 count·sum·max만 내보내 분위수를 못 만든다 —
+      # 평균은 느린 소수를 가리고 max는 한 건이 전체를 대표해, 둘 다 사용자가 겪은 값이 아니다.
+      # 경계는 queue의 queue_http_request_duration_seconds와 같은 값으로 둔다. 눈금이 같아야
+      # 두 서비스의 p99를 나란히 읽는다.
+      # percentiles-histogram 대신 slo로 주는 이유: 전자는 전 구간에 버킷을 자동 생성해
+      # 시리즈가 수 배로 는다. 여기 적은 경계만 노출된다.
+      slo:
+        http.server.requests: 1ms,2500us,5ms,10ms,25ms,50ms,100ms,250ms,500ms,1s,2500ms,5s,10s
   # 관측 trace: 전 요청 샘플링(데모 1.0) + OTLP 전송처(Tempo). Kafka observation-enabled가
   # 켜져 있어 HTTP·Kafka span은 자동 생성 — 여기선 샘플링율·전송처만 배선(코드 수술 없음).
   tracing:
