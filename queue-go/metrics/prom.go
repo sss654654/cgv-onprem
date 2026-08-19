@@ -138,10 +138,19 @@ var completedLag = promauto.NewHistogram(prometheus.HistogramOpts{
 // ObserveCompletedLag — 메시지의 발행 시각과 지금의 차. 발행 시각은 카프카 레코드
 // 타임스탬프(기본 CreateTime)라 booking 파드의 시계로 찍힌다 — 두 노드의 시계 차이가
 // 그대로 오차로 섞인다. 시계가 역전돼 음수가 나오면 지연이 아니라 잡음이므로 버린다.
-func ObserveCompletedLag(d time.Duration) {
-	if d >= 0 {
-		completedLag.Observe(d.Seconds())
+// ctx는 이 메시지를 소비하는 span을 담고 있다(booking이 발행한 trace의 자식). 그래서 여기
+// 붙는 exemplar를 누르면 예매 확정(booking) → Kafka → 자리 반환(queue)이 한 트레이스로 열린다
+// — 순환이 닫히는 구간 전체다. 표본에 남은 것에만 붙인다(없는 트레이스를 가리키지 않게).
+func ObserveCompletedLag(ctx context.Context, d time.Duration) {
+	if d < 0 {
+		return
 	}
+	if sc := trace.SpanContextFromContext(ctx); sc.IsSampled() {
+		completedLag.(prometheus.ExemplarObserver).
+			ObserveWithExemplar(d.Seconds(), prometheus.Labels{"trace_id": sc.TraceID().String()})
+		return
+	}
+	completedLag.Observe(d.Seconds())
 }
 
 // ── 행4 · 자원: 심는 것은 풀뿐(CPU·스로틀·메모리는 cAdvisor 공짜) ─────────────
