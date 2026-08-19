@@ -112,6 +112,8 @@ management:
         http.server.requests: 1ms,2500us,5ms,10ms,25ms,50ms,100ms,250ms,500ms,1s,2500ms,5s,10s
   # 관측 trace: 전 요청 샘플링(데모 1.0) + OTLP 전송처(Tempo). Kafka observation-enabled가
   # 켜져 있어 HTTP·Kafka span은 자동 생성 — 여기선 샘플링율·전송처만 배선(코드 수술 없음).
+  # 1.0인 근거: booking 요청은 확정 10건/초대라 전부 남겨도 양이 작다. queue는 폴링이
+  #   사용자당 수십-수백 건이라 그쪽만 비율을 낮춘다(queue tracing.go의 경로별 샘플러).
   tracing:
     sampling:
       probability: 1.0
@@ -120,6 +122,19 @@ management:
       # Boot 3.3.4 OTLP는 OTLP/HTTP만 지원 → 4318 HTTP 포트 + /v1/traces 경로.
       # env명은 OTLP_HTTP_ENDPOINT(queue의 gRPC용 OTLP_GRPC_ENDPOINT와 분리 — 프로토콜/포트 비호환).
       endpoint: ${OTLP_HTTP_ENDPOINT:http://localhost:4318/v1/traces}
+
+# JDBC 구간 span (datasource-micrometer). 예매 확정 한 건을 단계로 쪼개는 부분이다.
+#   connection = 커넥션 풀에서 꺼내 반납할 때까지. 풀이 마르면 이 span이 길어진다
+#                — hikaricp_connections_pending이 "지금 몇 건 대기"만 주는 자리를 메운다.
+#   query      = 질의 하나하나.
+#   fetch(기본 포함)는 뺀다 — ResultSet 소비마다 span이 생겨 수가 크게 늘고,
+#                판정에 쓰는 질문("풀이냐 질의냐")에는 답하지 않는다.
+jdbc:
+  includes: connection, query
+  datasource-proxy:
+    # 바인딩 파라미터 값(좌석번호·requestId·멱등키)을 span 속성으로 남기지 않는다.
+    # 값 자체가 카디널리티이고, 예매 데이터가 트레이스 저장소로 새는 경로가 된다.
+    include-parameter-values: false
 
 ---
 # redis-sentinel 프로파일 — k3s HA에서만 활성(SPRING_PROFILES_ACTIVE=redis-sentinel).

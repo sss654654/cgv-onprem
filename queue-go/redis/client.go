@@ -2,8 +2,10 @@ package redis
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
+	"github.com/redis/go-redis/extra/redisotel/v9"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -39,7 +41,7 @@ func New(addr, password string, poolSize int, masterName string, sentinelAddrs [
 		if poolSize > 0 {
 			fo.PoolSize = poolSize
 		}
-		return &Client{rdb: goredis.NewFailoverClient(fo)}
+		return &Client{rdb: instrument(goredis.NewFailoverClient(fo))}
 	}
 	opts := &goredis.Options{
 		Addr:         addr,
@@ -52,7 +54,22 @@ func New(addr, password string, poolSize int, masterName string, sentinelAddrs [
 	if poolSize > 0 {
 		opts.PoolSize = poolSize
 	}
-	return &Client{rdb: goredis.NewClient(opts)}
+	return &Client{rdb: instrument(goredis.NewClient(opts))}
+}
+
+// instrument = 명령마다 OTel span 을 붙인다. 호출부가 이미 ctx 를 끝까지 넘기고 있어
+// (핸들러의 c.Request.Context() → redis 패키지 전 함수의 첫 인자) 훅 하나로 부모-자식이 이어진다.
+//
+// 이게 없으면 트레이스가 "HTTP 요청 하나" 에서 끝나, 느린 요청을 열어도 Redis 에서
+// 기다린 것인지 그 밖인지 안 갈린다 — 지표는 총량만 주고 구간을 안 준다.
+//
+// 지표(metrics)는 켜지 않는다. 명령·상태별 카운터가 시리즈를 늘리는데, 같은 판단을
+// queue_redis_pool 계열과 redis_exporter 가 이미 준다.
+func instrument(rdb *goredis.Client) *goredis.Client {
+	if err := redisotel.InstrumentTracing(rdb); err != nil {
+		slog.Warn("redis 트레이싱 계측 실패(트레이스 없이 계속)", "err", err)
+	}
+	return rdb
 }
 
 // Ping은 Redis 도달 여부를 확인한다(헬스체크 /health/ready용).

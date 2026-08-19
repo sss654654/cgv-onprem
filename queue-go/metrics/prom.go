@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel/trace"
 
 	"cgv-onprem/queue-go/redis"
 )
@@ -45,8 +46,22 @@ func GinMiddleware() gin.HandlerFunc {
 		if path == "" {
 			path = "unmatched" // 미등록 경로(404류)를 한 라벨로 뭉침 — 폭발 방지
 		}
-		httpDuration.WithLabelValues(path, strconv.Itoa(c.Writer.Status())).
-			Observe(time.Since(start).Seconds())
+		obs := httpDuration.WithLabelValues(path, strconv.Itoa(c.Writer.Status()))
+		elapsed := time.Since(start).Seconds()
+
+		// exemplar = 이 관측치의 대표 표본. trace_id를 달아 두면 Grafana에서 p99 그래프의
+		//   점을 눌러 그 요청의 트레이스로 넘어간다. 평균이 아니라 "그 한 건"을 여는 유일한 경로다.
+		// 표본이 남지 않은 요청에는 붙이지 않는다 — trace_id는 있는데 Tempo에 그 트레이스가
+		//   없으면 눌렀을 때 빈 화면이 나온다. IsSampled()가 그 조건이다.
+		// otelgin이 이 미들웨어 안쪽에 있어, c.Next() 이후의 Request.Context()에는
+		//   그 요청의 span이 들어 있다(미들웨어 등록 순서가 이 전제다).
+		if sc := trace.SpanContextFromContext(c.Request.Context()); sc.IsSampled() {
+			if eo, ok := obs.(prometheus.ExemplarObserver); ok {
+				eo.ObserveWithExemplar(elapsed, prometheus.Labels{"trace_id": sc.TraceID().String()})
+				return
+			}
+		}
+		obs.Observe(elapsed)
 	}
 }
 
@@ -236,7 +251,15 @@ var trackedMovies = map[string]struct{}{}
 // 앱 포트에 열면 인그레스를 통해 밖에서 스택·힙 상태에 닿을 수 있으므로 여기에만 둔다.
 func ServeMetrics(port string) *http.Server {
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
+	// EnableOpenMetrics — exemplar를 실어 보내는 유일한 조건이다. Prometheus text 포맷에는
+	//   exemplar를 적을 문법이 없어, 기본 핸들러(promhttp.Handler())로는 계측에서 붙인
+	//   trace_id가 노출 단계에서 조용히 버려진다. 수집기가 OpenMetrics를 요청하면 그 포맷으로 준다.
+	// promhttp.Handler()가 자동으로 붙이던 핸들러 자기지표(promhttp_metric_handler_*)는
+	//   여기서 빠진다. 저장소·대시보드 전체에서 사용처가 0건이라 되살리지 않는다.
+	mux.Handle("/metrics", promhttp.HandlerFor(
+		prometheus.DefaultGatherer,
+		promhttp.HandlerOpts{EnableOpenMetrics: true},
+	))
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)

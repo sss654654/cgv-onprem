@@ -88,6 +88,18 @@
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-exporter-otlp</artifactId>
         </dependency>
+        <!-- 관측 trace: SQL 구간. DataSource를 감싸 질의마다 span을 남긴다(코드 수술 없음).
+             이게 없으면 예매 확정 요청의 span이 HTTP 하나뿐이라, 느린 한 건을 열어도
+             커넥션 풀에서 기다린 것인지 질의가 느린 것인지 안 갈린다 —
+             hikaricp_connections_pending은 그 순간 몇 건이 대기 중인지만 알려주고
+             "이 요청"이 거기 있었는지는 답하지 않는다.
+             버전은 부모 BOM이 관리하지 않아 직접 적는다. 1.1.x는 Spring Boot 3.4 계열을 기준으로
+             빌드돼 이 프로젝트(3.5.16)와 가깝다 — 1.0.x는 3.0 기준이라 간격이 크다. -->
+        <dependency>
+            <groupId>net.ttddyy.observation</groupId>
+            <artifactId>datasource-micrometer-spring-boot</artifactId>
+            <version>1.1.1</version>
+        </dependency>
 
         <!-- 테스트 전용. scope=test 라 실행 이미지에는 들어가지 않는다. -->
         <dependency>
