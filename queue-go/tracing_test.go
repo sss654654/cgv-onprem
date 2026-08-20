@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // 표본 정책이 어긋나도 요청은 정상 처리되고 에러도 안 난다 — 트레이스가 조용히 늘거나
@@ -73,6 +74,7 @@ func TestSamplerUsesRealSpanNames(t *testing.T) {
 func TestBackgroundSpansAlwaysSampled(t *testing.T) {
 	sampler := byRoute{polling: sdktrace.NeverSample(), rest: sdktrace.AlwaysSample()}
 	for _, name := range []string{
+		"promote cycle",
 		"publish admissions",
 		"publish admissions-revoked",
 		"consume bookings-completed",
@@ -81,5 +83,24 @@ func TestBackgroundSpansAlwaysSampled(t *testing.T) {
 		if d := sampler.ShouldSample(sdktrace.SamplingParameters{Name: name}).Decision; d != sdktrace.RecordAndSample {
 			t.Errorf("span %q 는 전부 남아야 한다, got %v", name, d)
 		}
+	}
+}
+
+// 부모 없이 뜨는 Redis 명령 span. 배경 루프가 일 없이 도는 조회라 트레이스로 남길 값이 없고,
+// 안 깎으면 유휴에도 초당 열 개 넘게 쌓인다(실측 11.37 span/초).
+// 같은 명령이라도 요청·승격 안에서 불리면 부모가 있어 ParentBased 가 먼저 판정하므로
+// 이 함수까지 오지 않는다 — 즉 "루트인 Client" 만 걸린다.
+func TestOrphanClientSpansSampledDown(t *testing.T) {
+	sampler := byRoute{polling: sdktrace.NeverSample(), rest: sdktrace.AlwaysSample()}
+	for _, name := range []string{"evalsha", "zcard", "get", "pipeline"} {
+		p := sdktrace.SamplingParameters{Name: name, Kind: trace.SpanKindClient}
+		if d := sampler.ShouldSample(p).Decision; d != sdktrace.Drop {
+			t.Errorf("고아 Client span %q 는 깎여야 한다, got %v", name, d)
+		}
+	}
+	// Internal 은 우리가 연 사이클 span 이라 남아야 한다.
+	p := sdktrace.SamplingParameters{Name: "promote cycle", Kind: trace.SpanKindInternal}
+	if d := sampler.ShouldSample(p).Decision; d != sdktrace.RecordAndSample {
+		t.Errorf("사이클 span 은 남아야 한다, got %v", d)
 	}
 }

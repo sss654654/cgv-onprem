@@ -5,6 +5,9 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+
 	"cgv-onprem/queue-go/kafka"
 	"cgv-onprem/queue-go/metrics"
 	"cgv-onprem/queue-go/redis"
@@ -78,6 +81,16 @@ func (p *QueueProcessor) processMovie(ctx context.Context, movieID string) {
 	if waiting <= 0 {
 		return // 대기자 없으면 패스(rate 관측도 불필요)
 	}
+
+	// 여기서부터가 승격 한 번이다. span을 열어 아래의 Redis·Kafka를 한 트레이스로 묶는다.
+	// 이 span이 없으면 Promote Lua·발행·저널 정리가 각각 부모 없는 트레이스로 흩어져,
+	// "승격이 늦었다"를 봐도 Lua가 느린 것인지 발행이 느린 것인지 못 가른다.
+	// 또 이 span이 admissions 발행의 부모가 되므로, 승격 → Kafka → booking 인증 발급이
+	// 하나의 트레이스로 이어진다.
+	// 대기자가 있을 때만 여는 것이 중요하다 — 위 조회 앞에 두면 유휴에도 2초마다 트레이스가 선다.
+	ctx, span := otel.Tracer("queue-processor").Start(ctx, "promote cycle")
+	defer span.End()
+	span.SetAttributes(attribute.String("movie", movieID), attribute.Int64("waiting", waiting))
 
 	admitted, err := p.rdb.Promote(ctx, movieID, p.maxSessions, p.batchSize, time.Now().UnixMilli())
 	if err != nil {

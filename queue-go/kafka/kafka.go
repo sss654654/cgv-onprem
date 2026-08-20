@@ -251,7 +251,7 @@ func ConsumeCompleted(ctx context.Context, broker string, rdb *redis.Client) {
 				commit(ctx, r, m)
 				return
 			}
-			removed, err := rdb.CompleteActive(ctx, e.MovieID, e.RequestID)
+			removed, err := rdb.CompleteActive(sctx, e.MovieID, e.RequestID)
 			if err != nil {
 				// 처리 실패(Redis 순단 등) → 커밋하지 않는다: 재기동/리밸런스 때 재전달(at-least-once).
 				// 같은 세션 안에서는 60s 세션 타임아웃이 자리를 회수(자가치유). [7] 꼬리 결정.
@@ -264,7 +264,7 @@ func ConsumeCompleted(ctx context.Context, broker string, rdb *redis.Client) {
 			slog.InfoContext(sctx, "예매완료 수신 → active 제거", "req", e.RequestID, "removed", removed)
 			// 실황 피드(화면용) — 실제로 자리가 반환됐을 때만. best-effort.
 			if removed {
-				if fErr := rdb.AppendEvents(ctx, e.MovieID, "RETURN", []string{e.RequestID}, time.Now().UnixMilli()); fErr != nil {
+				if fErr := rdb.AppendEvents(sctx, e.MovieID, "RETURN", []string{e.RequestID}, time.Now().UnixMilli()); fErr != nil {
 					slog.WarnContext(sctx, "실황 기록 실패(표시만 영향)", "err", fErr)
 				}
 			}

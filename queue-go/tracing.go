@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // pollingSpans = 낮은 비율로만 남길 루트 span 이름.
@@ -35,6 +36,14 @@ type byRoute struct {
 
 func (s byRoute) ShouldSample(p sdktrace.SamplingParameters) sdktrace.SamplingResult {
 	if _, ok := pollingSpans[routeOf(p.Name)]; ok {
+		return s.polling.ShouldSample(p)
+	}
+	// ParentBased 가 감싸고 있어 이 함수는 루트 span 에만 불린다.
+	// 루트인데 Client 라는 건 "밖으로 나가는 호출인데 그 위에 아무 맥락이 없다" 는 뜻이다 —
+	// 배경 루프가 일 없이 도는 조회(승격 중단 플래그 · 영화 목록 · 게이지 갱신)가 여기 해당한다.
+	// 승격처럼 실제로 일이 일어나는 자리는 위에서 span 을 열어 두므로 루트가 아니고, 안 깎인다.
+	// 이 갈래가 없으면 유휴에도 배경 조회가 초당 열 개 넘는 트레이스를 만든다(실측 11.37 span/초).
+	if p.Kind == trace.SpanKindClient {
 		return s.polling.ShouldSample(p)
 	}
 	return s.rest.ShouldSample(p)
