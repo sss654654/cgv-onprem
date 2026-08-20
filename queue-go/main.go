@@ -91,12 +91,15 @@ func main() {
 	// 상태 게이지 샘플러(waiting·active·rate·풀). 5s = 폴링 최대 주기와 같은 급.
 	bg("metrics-sampler", func(c context.Context) { metrics.StartSampler(c, rdb, rate, 5*time.Second) })
 
-	// 7) gin.New() = 미들웨어 0(직접 제어). 순서 중요: 계측이 Recovery보다 바깥이어야
-	//    panic 요청도 히스토그램에 500으로 기록된다(Recovery가 안쪽에서 panic 흡수 →
-	//    바깥 계측 Observe). 반대면 실패 요청이 계측에서 누락된다.
+	// 7) gin.New() = 미들웨어 0(직접 제어). 순서가 두 조건을 동시에 만족해야 한다.
+	//    ① 계측이 Recovery보다 바깥 — panic 요청도 히스토그램에 500으로 기록된다
+	//       (Recovery가 안쪽에서 panic 흡수 → 바깥 계측이 Observe). 반대면 실패가 누락된다.
+	//    ② 계측이 otelgin보다 안쪽 — otelgin은 끝나면서 c.Request를 원래 컨텍스트로
+	//       되돌린다(defer). 바깥에 두면 c.Next()가 돌아온 시점에 span이 이미 사라져,
+	//       계측이 exemplar에 실을 trace_id를 못 얻는다. 그러면 p99 그래프의 점이 안 뜬다.
 	r := gin.New()
-	r.Use(metrics.GinMiddleware())
-	r.Use(otelgin.Middleware("queue-go")) // trace: 요청마다 서버 span 생성(계측은 바깥, Recovery는 안쪽 유지)
+	r.Use(otelgin.Middleware("queue-go")) // 요청마다 서버 span 생성
+	r.Use(metrics.GinMiddleware())        // span 안쪽 · Recovery 바깥
 	r.Use(gin.Recovery())
 
 	// 8) 라우트 — 헬스 + 대기열(enter·position·leave·complete).

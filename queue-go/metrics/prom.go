@@ -53,8 +53,9 @@ func GinMiddleware() gin.HandlerFunc {
 		//   점을 눌러 그 요청의 트레이스로 넘어간다. 평균이 아니라 "그 한 건"을 여는 유일한 경로다.
 		// 표본이 남지 않은 요청에는 붙이지 않는다 — trace_id는 있는데 Tempo에 그 트레이스가
 		//   없으면 눌렀을 때 빈 화면이 나온다. IsSampled()가 그 조건이다.
-		// otelgin이 이 미들웨어 안쪽에 있어, c.Next() 이후의 Request.Context()에는
-		//   그 요청의 span이 들어 있다(미들웨어 등록 순서가 이 전제다).
+		// ★ 이 미들웨어는 otelgin보다 안쪽에 등록해야 한다. otelgin은 끝나면서 c.Request를
+		//   원래 컨텍스트로 되돌리므로(defer), 바깥에 두면 c.Next()가 돌아온 시점엔 span이
+		//   이미 사라져 trace_id를 못 얻는다 — 계측은 그대로 도는데 exemplar만 조용히 빠진다.
 		if sc := trace.SpanContextFromContext(c.Request.Context()); sc.IsSampled() {
 			if eo, ok := obs.(prometheus.ExemplarObserver); ok {
 				eo.ObserveWithExemplar(elapsed, prometheus.Labels{"trace_id": sc.TraceID().String()})

@@ -127,7 +127,9 @@ Set을 쓰면 멤버별 TTL이 없어 만료를 Redis가 대신해줄 수 없다
 
 **점유 좌석은 회차별 인덱스 Set으로 센다.** `seatlocks:{screeningId}`에 점유 중인 좌석번호를 좌석락과 같은 Lua 안에서 함께 기록한다. 인덱스가 없으면 "이 회차에 몇 석 잠겼나"를 `SCAN`으로 알아내야 하는데, `SCAN`의 `MATCH`는 서버측 필터일 뿐 커서는 DB 전체 키를 훑는다 — 회차 하나 조회에 (전체 키수 / COUNT)회 왕복이 들고, 이 Redis는 queue가 대기열 폴링을 처리하는 바로 그 인스턴스다.
 
-같은 이유로 회차 목록의 판매수도 회차별 count 쿼리가 아니라 `group by` 한 번으로 받는다. 회차 목록은 입장 직후 첫 화면이라 정원 전체가 주기적으로 다시 부르는 경로다.
+같은 이유로 **회차 목록은 판매수도 점유수도 회차별로 묻지 않는다** — 판매수는 `group by` 한 번, 점유수는 회차 키 전부를 KEYS로 받는 Lua 한 번이다. 회차 목록은 입장 직후 첫 화면이라 정원 전체가 주기적으로 다시 부르는 경로이고, 회차가 20개(지점5×관4)라 회차별로 물으면 요청 하나가 Redis를 20번 왕복한다.
+
+> 처음에는 점유수만 회차별 루프였다. 부하 판에서 이 경로의 p99가 다른 엔드포인트의 5배로 나왔고, 트레이스를 열어 보니 요청 하나에 `evalsha` span이 20개였다. 지표는 "느리다"까지만 말했고 "왕복이 20번"은 트레이스가 답했다.
 
 ---
 
@@ -147,7 +149,7 @@ booking/src/main/java/com/cgv/booking/
 │   ├── BookingService         confirm() 오케스트레이션(위 흐름)
 │   ├── BookingPersistence     @Transactional 부분만 분리(프록시 통과 + timeout 5s)
 │   ├── SeatRequest            좌석 요청 정규화(중복 제거·정렬·개수 상한)
-│   ├── ScreeningService       회차+잔여(판매 group by + 락 인덱스 합산)
+│   ├── ScreeningService       회차+잔여(판매 group by 1회 + 점유 Lua 1회, 회차 수와 무관)
 │   ├── SeatService            좌석도(3상태 합성) + 점유/해제
 │   ├── AdminResetService      예매·좌석락·입장인증 삭제 + 방송일 재설정
 │   └── PaymentGateway         PG mock(approve/refund)

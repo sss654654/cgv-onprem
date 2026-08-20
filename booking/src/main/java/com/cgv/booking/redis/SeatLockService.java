@@ -7,8 +7,10 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 // 좌석 임시점유 — string 키 seat:{screeningId}:{seatNo}, SET NX EX(TTL).
@@ -67,6 +69,23 @@ public class SeatLockService {
             "end " +
             "for i=1,#stale do redis.call('SREM', KEYS[1], stale[i]) end " +
             "return live", List.class);
+
+    // 위 LIVE_LOCKS의 여러 회차 판. KEYS[i]=인덱스 Set, ARGV[i]=그 회차의 좌석키 접두.
+    // 목록이 아니라 개수만 돌려준다 — 호출부(회차 목록)가 개수만 쓴다.
+    private static final DefaultRedisScript<List> LIVE_LOCK_COUNTS = new DefaultRedisScript<>(
+            "local out = {} " +
+            "for i=1,#KEYS do " +
+            "  local members = redis.call('SMEMBERS', KEYS[i]) " +
+            "  local live = 0 " +
+            "  local stale = {} " +
+            "  for j=1,#members do " +
+            "    if redis.call('EXISTS', ARGV[i] .. members[j]) == 1 then live = live + 1 " +
+            "    else stale[#stale+1] = members[j] end " +
+            "  end " +
+            "  for j=1,#stale do redis.call('SREM', KEYS[i], stale[j]) end " +
+            "  out[i] = live " +
+            "end " +
+            "return out", List.class);
 
     public SeatLockService(StringRedisTemplate redis, CgvProps props) {
         this.redis = redis;
@@ -132,5 +151,37 @@ public class SeatLockService {
     // 회차 선택: 그 관 임시점유 수.
     public long countLocked(String screeningId) {
         return lockedSeatNos(screeningId).size();
+    }
+
+    // 회차 목록: 여러 관의 임시점유 수를 한 번의 왕복으로.
+    //
+    // 회차마다 countLocked를 부르면 회차 수만큼 왕복한다(지점5×관4 = 20회). 그 화면은
+    // 게이트 뒤 첫 진입점이라 입장한 사람 전원이 반복해서 부르고, 이 Redis는 queue가
+    // 대기열 폴링을 처리하는 바로 그 인스턴스다 — 왕복이 여기서 늘면 대기열이 먼저 느려진다.
+    // 판매완료 수를 회차별 count가 아니라 group by 한 번으로 받는 것과 같은 이유다.
+    //
+    // 개수만 필요하므로 좌석번호 목록을 보내지 않고 Lua 안에서 세어 정수만 돌려준다.
+    // 만료된 멤버 정리(SREM)는 낱개 버전과 같다 — 판정 로직을 옮긴 것이지 바꾼 것이 아니다.
+    //
+    // ⚠ Redis Cluster로 가면 회차 키가 서로 다른 슬롯에 흩어져 CROSSSLOT으로 거부된다.
+    //   그때는 키에 해시태그(seatlocks:{movieId}:...)를 넣거나 회차를 슬롯별로 나눠 불러야 한다.
+    @SuppressWarnings("unchecked")
+    public Map<String, Long> countLockedByScreening(List<String> screeningIds) {
+        if (screeningIds == null || screeningIds.isEmpty()) return Map.of();
+
+        List<String> keys = new ArrayList<>(screeningIds.size());
+        Object[] prefixes = new Object[screeningIds.size()];
+        for (int i = 0; i < screeningIds.size(); i++) {
+            keys.add(indexKey(screeningIds.get(i)));
+            prefixes[i] = prefix(screeningIds.get(i));
+        }
+
+        List<Object> counts = redis.execute(LIVE_LOCK_COUNTS, keys, prefixes);
+        Map<String, Long> out = new HashMap<>(screeningIds.size());
+        if (counts == null) return out;
+        for (int i = 0; i < screeningIds.size() && i < counts.size(); i++) {
+            out.put(screeningIds.get(i), ((Number) counts.get(i)).longValue());
+        }
+        return out;
     }
 }

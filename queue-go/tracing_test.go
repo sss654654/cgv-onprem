@@ -78,7 +78,7 @@ func TestBackgroundSpansAlwaysSampled(t *testing.T) {
 		"publish admissions",
 		"publish admissions-revoked",
 		"consume bookings-completed",
-		"GET", // 라우트가 안 잡힌 요청 — otelgin 은 메서드만 남긴다
+		"HTTP GET route not found", // 라우트가 안 잡힌 요청에 otelgin 이 붙이는 이름
 	} {
 		if d := sampler.ShouldSample(sdktrace.SamplingParameters{Name: name}).Decision; d != sdktrace.RecordAndSample {
 			t.Errorf("span %q 는 전부 남아야 한다, got %v", name, d)
@@ -102,5 +102,38 @@ func TestOrphanClientSpansSampledDown(t *testing.T) {
 	p := sdktrace.SamplingParameters{Name: "promote cycle", Kind: trace.SpanKindInternal}
 	if d := sampler.ShouldSample(p).Decision; d != sdktrace.RecordAndSample {
 		t.Errorf("사이클 span 은 남아야 한다, got %v", d)
+	}
+}
+
+// 계측 미들웨어가 span 을 볼 수 있는 자리에 있는지 고정한다.
+//
+// otelgin 은 끝나면서 c.Request 를 원래 컨텍스트로 되돌린다(defer). 그래서 otelgin 보다
+// 먼저 등록된 미들웨어는 c.Next() 가 돌아온 시점에 span 을 못 본다 — 계측은 그대로 돌고
+// exemplar 만 조용히 빠진다. 지표도 트레이스도 각각 정상으로 보여서 사람이 알아챌 경로가 없다.
+// (실제로 그렇게 배포됐고, Mimir 에 exemplar 가 0 건인 것으로만 드러났다.)
+func TestInstrumentationSeesSpanAfterNext(t *testing.T) {
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(tracetest.NewSpanRecorder()))
+	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	// main.go 와 같은 순서 — otelgin 이 바깥, 계측이 안쪽.
+	r.Use(otelgin.Middleware("queue-go", otelgin.WithTracerProvider(tp)))
+
+	var sampled, valid bool
+	r.Use(func(c *gin.Context) {
+		c.Next() // 계측은 응답 시간을 재야 하므로 여기서 span 을 읽는다
+		sc := trace.SpanContextFromContext(c.Request.Context())
+		valid, sampled = sc.IsValid(), sc.IsSampled()
+	})
+	r.GET("/api/admission/enter", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/admission/enter", nil))
+
+	if !valid {
+		t.Fatal("c.Next() 뒤에 span 이 안 보인다 — 계측이 otelgin 바깥에 등록됐다. exemplar 가 안 붙는다")
+	}
+	if !sampled {
+		t.Error("span 이 표본에 안 남았다 — enter 는 폴링 목록에 없어 전부 남아야 한다")
 	}
 }

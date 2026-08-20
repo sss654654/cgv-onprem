@@ -48,10 +48,14 @@ public class ScreeningService {
             soldById.put((String) row[0], ((Number) row[1]).longValue());
         }
 
+        // 임시점유도 판매완료와 같이 한 번에 받는다. 회차마다 부르면 회차 수만큼 왕복하고,
+        // 이 화면은 게이트 뒤 첫 진입점이라 입장한 사람 전원이 반복해서 부른다.
+        Map<String, Long> lockedById = locks.countLockedByScreening(ids);
+
         List<ScreeningView> out = new ArrayList<>(list.size());
         for (Screening s : list) {
-            long sold = soldById.getOrDefault(s.getId(), 0L);   // 판매완료(영구, MySQL)
-            long locked = locks.countLocked(s.getId());          // 임시점유(Redis)
+            long sold = soldById.getOrDefault(s.getId(), 0L);       // 판매완료(영구, MySQL)
+            long locked = lockedById.getOrDefault(s.getId(), 0L);   // 임시점유(Redis)
             // sold와 locked는 겹치지 않는다 — 확정 커밋 직후 그 좌석의 락을 해제하고, 판매된 좌석은
             // 다시 잠기지 않는다(select가 판매완료를 먼저 거른다). 커밋과 락 해제 사이 짧은 창에서만
             // 겹칠 수 있어 그때 잔여가 실제보다 작게 보이고, 다음 조회에서 복구된다.

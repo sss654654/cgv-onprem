@@ -60,6 +60,7 @@ queue는 "누가 입장할 수 있나"(정원·명단·타임아웃)를 소유�
 - **enter** (`POST /api/admission/enter`) — 정원 여유면 `ADMITTED`(200), 꽉 차면 `WAITING`(202)+순번. `ADMITTED`일 때만 `admissions`를 발행한다.
 - **position** (`GET /api/admission/position`) — 3-state 판정. `ZSCORE active`(있으면 ADMITTED) → `ZRANK waiting`(있으면 WAITING+순번) → 둘 다 없으면 EXPIRED. active를 먼저 보는 이유는 승격된 사용자가 waiting에서 빠지기 때문이다. 폴링은 `waiting_lastseen`을 갱신하는 생존 신호도 겸한다.
 - **stats** (`GET /api/admission/stats`) — 전체 현황(입장·대기·누적 승격·정원·신규 진입자 예상 대기). 파이프라인 한 왕복 집계, 읽기 전용. 프론트의 현황 타일이 3초마다 부른다.
+- **events** (`GET /api/admission/events?after=`) — 실황 피드. `after`(마지막으로 본 id) 이후만 돌려준다. 프론트가 3초마다 부르고, 새 이벤트가 없으면 0건이다.
 - **leave** (`POST /api/admission/leave`) — 자발적 이탈. active·waiting·lastseen에서 전부 제거.
 - **complete** (`POST /api/admission/complete`) — 사용자가 부른 자리 반환. active에서만 제거.
 - **reset** (`POST /api/admission/reset`) — 한 영화의 대기열 상태 전부 삭제(운영용). `X-Admin-Token` 헤더로 검증하며, **`ADMIN_TOKEN`을 주입하지 않은 배포에는 라우트 자체가 등록되지 않는다** — 403을 돌려주는 방식이면 API의 존재가 드러나서다. 예매 기록·좌석 쪽 초기화는 booking의 `/api/admin/reset`이 맡는다.
@@ -113,7 +114,8 @@ queue-go/
 │   ├── leave.go       leaveScript / releaseScript / CompleteActive
 │   ├── untrack.go     빈 대기열의 추적 Set 해제(원자 — 비었을 때만)
 │   ├── pending.go     저널 조회·정리, 승격 중단 플래그
-│   ├── position.go    3-state 순번 조회(Lua 아님 — 읽기 위주)
+│   ├── position.go    positionScript(3-state 판정 + 생존 도장, 원자·왕복 1회)
+│   ├── events.go      실황 피드 — 이벤트 기록(ZAdd)·읽기(after 이후만)
 │   ├── rate.go        승격 처리율 — 초 단위 버킷 기록·창(90초) 평균 조회
 │   ├── stats.go       현황 집계(active·waiting·promoted, 파이프라인 1왕복)
 │   ├── reset.go       대기열 초기화(운영용 — 키 계산으로 일괄 삭제, SCAN 없음)
@@ -130,7 +132,7 @@ queue-go/
     └── rate.go        RateProvider — Redis 공유 버킷의 창 평균을 짧게 캐시해 ETA·지표에 공급
 ```
 
-원자성이 필요한 연산(정원 확인·승격·만료·이탈)은 Lua로 묶고, 읽기 위주인 position은 개별 명령으로 조립한다. `redis/` 패키지가 go-redis 의존을 가둬 핸들러·프로세서는 래퍼 타입만 참조한다.
+원자성이 필요한 연산(정원 확인·승격·만료·이탈)은 Lua로 묶는다. **읽기인 position도 Lua다** — ZSCORE와 ZRANK를 따로 왕복하면 그 사이에 승격이 끼어, waiting에서 빠진 사람을 "둘 다 없음"으로 읽고 방금 입장한 사용자에게 EXPIRED를 돌려준다. 판정 순서만으로는 그 창이 안 닫힌다. `redis/` 패키지가 go-redis 의존을 가둬 핸들러·프로세서는 래퍼 타입만 참조한다.
 
 ---
 
@@ -146,9 +148,12 @@ queue-go/
 | `pending_events:{movie}` | ZSet | 상태변경 시각(ms) | 발행 대기 저널 |
 | `queue:promote_pause` | string(TTL) | "1" | 발행 실패 시 전 파드 공통 승격 중단 |
 | `active_movies` / `waiting_movies` | Set | — | 루프가 돌 대상 영화 추적 |
+| `events:{movie}` | ZSet(TTL) | 이벤트 id | 화면용 실황 피드. 최근 100건만 유지 |
+| `events_id:{movie}` | counter(TTL) | INCRBY | 피드 id 발급. 클라가 "어디까지 봤나"를 이 값으로 가른다 |
 
 - `waiting`과 `waiting_lastseen`은 score 용도가 달라 분리한다(진입 순서 vs 마지막 폴링). 합치면 폴링할 때마다 순번이 밀린다. 멤버는 항상 함께 움직인다 — enter에서 둘 다 ZADD, 빼는 모든 경로에서 둘 다 ZREM.
 - **이탈 감지는 last-seen 방식이다.** 폴링은 붙잡는 연결이 없어 "끊김"을 직접 못 잡는다. 마지막 폴링 시각을 저장해두고 cutoff(now − timeout)보다 오래되면 회수한다.
+- **실황 피드가 List가 아니라 ZSet인 이유는 읽는 쪽 조건에 있다.** score를 이벤트 id로 두면 "id가 after보다 큰 것"을 Redis가 잘라서 보낸다 — 새 이벤트가 없으면 0건이 온다. List면 그 조건을 서버에서 못 걸어 보관분 전체(100건, 약 6KB)를 받아 앱에서 잘라야 하고, 피드는 화면마다 3초로 폴링하는 경로라 그 전송이 대부분 낭비가 된다.
 
 ---
 

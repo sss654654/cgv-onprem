@@ -3,7 +3,10 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"time"
+
+	goredis "github.com/redis/go-redis/v9"
 )
 
 // 이벤트 피드 — 방문자 화면의 실황 재료. 운영 기록이 아니다(그건 stdout 로그 몫).
@@ -40,21 +43,25 @@ func (c *Client) AppendEvents(ctx context.Context, movieID, evType string, rids 
 	if err != nil {
 		return err
 	}
-	vals := make([]interface{}, 0, len(rids))
+	members := make([]goredis.Z, 0, len(rids))
 	for i, rid := range rids {
-		b, mErr := json.Marshal(FeedEvent{ID: end - int64(len(rids)-1-i), T: nowMs, Type: evType, Rid: rid})
+		id := end - int64(len(rids)-1-i)
+		b, mErr := json.Marshal(FeedEvent{ID: id, T: nowMs, Type: evType, Rid: rid})
 		if mErr != nil {
 			continue
 		}
-		vals = append(vals, b)
+		members = append(members, goredis.Z{Score: float64(id), Member: b})
 	}
-	if len(vals) == 0 {
+	if len(members) == 0 {
 		return nil
 	}
-	// LPUSH는 넘긴 순서대로 왼쪽에 쌓이므로 마지막 원소(최신 id)가 리스트 머리가 된다.
+	// score = 이벤트 id. 읽는 쪽이 "id가 after보다 큰 것"을 Redis에서 바로 자르게 하려고
+	//   List가 아니라 Sorted Set에 담는다. List면 조건을 서버에서 못 걸어 캡 전체를 받아
+	//   앱에서 잘라야 한다 — 폴링은 대부분 "새 게 없다"라 그 전송이 통째로 낭비가 된다.
+	// 캡은 ZREMRANGEBYRANK로 오래된 쪽(rank 0부터)을 잘라 유지한다.
 	pipe := c.rdb.Pipeline()
-	pipe.LPush(ctx, EventsKey(movieID), vals...)
-	pipe.LTrim(ctx, EventsKey(movieID), 0, eventCap-1)
+	pipe.ZAdd(ctx, EventsKey(movieID), members...)
+	pipe.ZRemRangeByRank(ctx, EventsKey(movieID), 0, -int64(eventCap)-1)
 	pipe.Expire(ctx, EventsKey(movieID), eventTTL)
 	pipe.Expire(ctx, EventsIDKey(movieID), eventTTL)
 	_, err = pipe.Exec(ctx)
@@ -62,33 +69,47 @@ func (c *Client) AppendEvents(ctx context.Context, movieID, evType string, rids 
 }
 
 // ReadEvents = after(마지막으로 본 id) 이후의 이벤트를 오래된 것부터 반환.
-// after=0(첫 로드)이면 최근 30건만 — 화면을 처음부터 100줄로 덮지 않는다.
-// last = 현재 피드의 최대 id. 데이터 초기화로 id가 뒤로 가면 클라이언트가 이 값으로 감지한다.
+// score가 id라 "(after"로 열린 하한을 줘 Redis가 잘라서 보낸다 — 새 이벤트가 없으면 0건이 온다.
+// 폴링 대부분이 그 경우라, 캡 전체를 받아 앱에서 자르던 것과 전송량이 자릿수로 갈린다.
+// 첫 로드(after=0)는 최근 30건만. ZSet은 오름차순이라 그때만 Rev 계열로 받고 뒤집는다.
 func (c *Client) ReadEvents(ctx context.Context, movieID string, after int64) ([]FeedEvent, int64, error) {
-	raw, err := c.rdb.LRange(ctx, EventsKey(movieID), 0, eventCap-1).Result()
+	key := EventsKey(movieID)
+
+	// last = 현재 피드의 최대 id. 데이터 초기화로 id가 뒤로 가면 클라이언트가 이 값으로 감지한다.
+	// 비어 있으면 0.
+	var last int64
+	if top, err := c.rdb.ZRevRangeWithScores(ctx, key, 0, 0).Result(); err != nil {
+		return nil, 0, err
+	} else if len(top) > 0 {
+		last = int64(top[0].Score)
+	}
+
+	var raw []string
+	var err error
+	if after == 0 {
+		raw, err = c.rdb.ZRevRange(ctx, key, 0, 29).Result() // 최신 30건(내림차순)
+	} else {
+		raw, err = c.rdb.ZRangeByScore(ctx, key, &goredis.ZRangeBy{
+			Min: "(" + strconv.FormatInt(after, 10), // 열린 하한 — after 자신은 뺀다
+			Max: "+inf",
+		}).Result() // 이미 오름차순
+	}
 	if err != nil {
 		return nil, 0, err
 	}
+
 	out := make([]FeedEvent, 0, len(raw))
-	var last int64
-	for _, s := range raw { // 리스트는 새 것부터 — id 내림차순
+	for _, s := range raw {
 		var e FeedEvent
 		if json.Unmarshal([]byte(s), &e) != nil {
 			continue
 		}
-		if e.ID > last {
-			last = e.ID
-		}
-		if e.ID <= after {
-			break // 내림차순이라 이후는 전부 이미 본 것
-		}
 		out = append(out, e)
 	}
-	if after == 0 && len(out) > 30 {
-		out = out[:30]
-	}
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 { // 오래된 것부터로 뒤집기
-		out[i], out[j] = out[j], out[i]
+	if after == 0 { // ZRevRange 결과라 내림차순 — 오래된 것부터로 뒤집는다
+		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+			out[i], out[j] = out[j], out[i]
+		}
 	}
 	return out, last, nil
 }
