@@ -39,7 +39,7 @@ func TestSamplerUsesRealSpanNames(t *testing.T) {
 	r.POST("/api/admission/complete", noop)
 
 	// 폴링이냐 아니냐 = 표본에서 깎이느냐. 값을 확실히 가르려고 양쪽 극단을 쓴다.
-	sampler := byRoute{polling: sdktrace.NeverSample(), rest: sdktrace.AlwaysSample()}
+	sampler := byRoute{polling: sdktrace.NeverSample(), rest: sdktrace.AlwaysSample(), never: sdktrace.NeverSample()}
 
 	cases := []struct {
 		method, path string
@@ -48,7 +48,7 @@ func TestSamplerUsesRealSpanNames(t *testing.T) {
 		{http.MethodGet, "/api/admission/position", false}, // 대기 화면이 1-5초마다
 		{http.MethodGet, "/api/admission/stats", false},    // 현황 타일 3초
 		{http.MethodGet, "/api/admission/events", false},   // 실황 피드 3초
-		{http.MethodGet, "/health/ready", false},           // kubelet 프로브
+		{http.MethodGet, "/health/ready", false},           // kubelet 프로브 — 아래 테스트가 never 임을 따로 고정한다
 		{http.MethodPost, "/api/admission/enter", true},    // 사용자당 1회
 		{http.MethodPost, "/api/admission/complete", true}, // 사용자당 1회
 	}
@@ -70,9 +70,32 @@ func TestSamplerUsesRealSpanNames(t *testing.T) {
 	}
 }
 
+// 프로브는 비율과 무관하게 남지 않는다.
+//
+// 폴링 비율을 올리면(0.01 → 0.1) 프로브가 같은 목록에 있는 동안은 프로브 트레이스도 같이 는다.
+// 프로브는 span 이 한둘이라 열어도 나오는 게 없고 kubelet 이 파드마다 주기적으로 부르므로
+// 비율 목록이 아니라 never 로 가른다. 이 테스트는 폴링을 전부 남기는 극단값으로 두고도
+// 프로브가 안 남는지 본다 — 두 목록이 합쳐지는 회귀를 잡는다.
+func TestHealthProbesNeverSampled(t *testing.T) {
+	sampler := byRoute{
+		polling: sdktrace.AlwaysSample(), // 비율이 아무리 높아도
+		rest:    sdktrace.AlwaysSample(),
+		never:   sdktrace.NeverSample(),
+	}
+	for _, name := range []string{"GET /health/live", "GET /health/ready"} {
+		if d := sampler.ShouldSample(sdktrace.SamplingParameters{Name: name}).Decision; d != sdktrace.Drop {
+			t.Errorf("프로브 span %q 는 안 남아야 한다, got %v", name, d)
+		}
+	}
+	// 폴링은 같은 조건에서 남는다 — never 목록이 폴링까지 삼키지 않았는지 확인.
+	if d := sampler.ShouldSample(sdktrace.SamplingParameters{Name: "GET /api/admission/position"}).Decision; d != sdktrace.RecordAndSample {
+		t.Errorf("폴링은 비율이 1 이면 남아야 한다, got %v", d)
+	}
+}
+
 // 배경 루프가 여는 루트 span. 이쪽이 깎이면 승격 → admissions → booking 체인이 끊긴다.
 func TestBackgroundSpansAlwaysSampled(t *testing.T) {
-	sampler := byRoute{polling: sdktrace.NeverSample(), rest: sdktrace.AlwaysSample()}
+	sampler := byRoute{polling: sdktrace.NeverSample(), rest: sdktrace.AlwaysSample(), never: sdktrace.NeverSample()}
 	for _, name := range []string{
 		"promote cycle",
 		"publish admissions",
@@ -91,7 +114,7 @@ func TestBackgroundSpansAlwaysSampled(t *testing.T) {
 // 같은 명령이라도 요청·승격 안에서 불리면 부모가 있어 ParentBased 가 먼저 판정하므로
 // 이 함수까지 오지 않는다 — 즉 "루트인 Client" 만 걸린다.
 func TestOrphanClientSpansSampledDown(t *testing.T) {
-	sampler := byRoute{polling: sdktrace.NeverSample(), rest: sdktrace.AlwaysSample()}
+	sampler := byRoute{polling: sdktrace.NeverSample(), rest: sdktrace.AlwaysSample(), never: sdktrace.NeverSample()}
 	for _, name := range []string{"evalsha", "zcard", "get", "pipeline"} {
 		p := sdktrace.SamplingParameters{Name: name, Kind: trace.SpanKindClient}
 		if d := sampler.ShouldSample(p).Decision; d != sdktrace.Drop {

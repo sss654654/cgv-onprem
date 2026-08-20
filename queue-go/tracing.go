@@ -15,16 +15,23 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// neverSampled = 트레이스를 아예 만들지 않을 경로.
+// 프로브는 span 이 하나(/health/live) 또는 둘(/health/ready 는 Redis ping 하나)이라
+// 열어도 나오는 게 "빨랐다" 뿐이고, kubelet 이 파드마다 주기적으로 부른다.
+// 프로브 실패는 kube_pod_status_ready 와 재시작 횟수로 본다 — 트레이스가 답할 자리가 아니다.
+var neverSampled = map[string]struct{}{
+	"/health/live":  {},
+	"/health/ready": {},
+}
+
 // pollingSpans = 낮은 비율로만 남길 루트 span 이름.
-// otelgin 은 라우트 패턴을 span 이름으로 쓰고, 프로브는 kubelet 이 파드마다 주기적으로 부른다.
+// otelgin 은 라우트 패턴을 span 이름으로 쓴다.
 // 여기 없는 경로는 전부 남는다 — 새 경로가 조용히 표본에서 빠지는 쪽보다,
 // 늘어난 양이 눈에 띄어 여기 추가하게 되는 쪽이 안전하다.
 var pollingSpans = map[string]struct{}{
 	"/api/admission/position": {}, // 대기 화면이 1-5초마다. 요청 수의 대부분
 	"/api/admission/stats":    {}, // 메인 화면 현황 타일, 3초 고정
 	"/api/admission/events":   {}, // 실황 피드, 3초 고정
-	"/health/live":            {},
-	"/health/ready":           {},
 }
 
 // byRoute = 루트 span 이름으로 샘플러를 가르는 샘플러.
@@ -32,10 +39,15 @@ var pollingSpans = map[string]struct{}{
 type byRoute struct {
 	polling sdktrace.Sampler
 	rest    sdktrace.Sampler
+	never   sdktrace.Sampler
 }
 
 func (s byRoute) ShouldSample(p sdktrace.SamplingParameters) sdktrace.SamplingResult {
-	if _, ok := pollingSpans[routeOf(p.Name)]; ok {
+	route := routeOf(p.Name)
+	if _, ok := neverSampled[route]; ok {
+		return s.never.ShouldSample(p)
+	}
+	if _, ok := pollingSpans[route]; ok {
 		return s.polling.ShouldSample(p)
 	}
 	// ParentBased 가 감싸고 있어 이 함수는 루트 span 에만 불린다.
@@ -61,7 +73,8 @@ func routeOf(spanName string) string {
 }
 
 func (s byRoute) Description() string {
-	return "ByRoute{polling=" + s.polling.Description() + ",rest=" + s.rest.Description() + "}"
+	return "ByRoute{polling=" + s.polling.Description() + ",rest=" + s.rest.Description() +
+		",never=" + s.never.Description() + "}"
 }
 
 // initTracer = OTel TracerProvider 초기화. OTLP/gRPC로 span을 OTLP_GRPC_ENDPOINT
@@ -95,7 +108,7 @@ func initTracer(ctx context.Context) (func(context.Context) error, error) {
 		return nil, err
 	}
 
-	// OTEL_TRACES_SAMPLER_ARG = **폴링 경로에만** 걸리는 비율(기본 0.01). 나머지는 전부 남긴다.
+	// OTEL_TRACES_SAMPLER_ARG = **폴링 경로에만** 걸리는 비율(기본 0.05). 나머지는 전부 남긴다.
 	//
 	// 비율 하나를 전 경로에 걸면 두 요구가 충돌한다. 폴링은 사용자당 수십-수백 건이라
 	//   전부 남기면 Tempo 가 버리고 Alloy RSS 가 limit 의 94% 까지 오르지만(1.0 실측),
@@ -103,7 +116,18 @@ func initTracer(ctx context.Context) (func(context.Context) error, error) {
 	//   넘는 트레이스를 못 본다. 요청 종류별로 건수가 자릿수로 달라서 생기는 문제다.
 	// 그래서 폴링만 낮추고 나머지는 전부 남긴다. enter 는 사용자당 1 회, 승격 발행은
 	//   초당 십여 건이라 전부 남겨도 총량이 폴링에 묻힌다.
-	ratio := 0.01
+	//
+	// 0.01 에서 0.05 로 올린 근거(2026-08-20, 정원 300 · 8분 부하).
+	//   exemplar 는 스크레이프(15초)마다 버킷당 하나까지 붙는다. 그런데 position 의 p99 구간
+	//   (le=2.5)에 붙은 점은 8분 동안 두 개였다 — 그 창에 표본으로 뽑힌 요청이 없어서다.
+	//   실제 p99 는 2,432ms 인데 점이 가리키는 최대는 1,363ms 였다. 가장 느린 요청을 여는 것이
+	//   이 배선의 목적인데 그 자리가 비어 있었다.
+	//   0.05 면 폴링 span 이 23/초에서 113/초가 되고 총량은 610 → 약 700/초다(부하 피크 실측).
+	//   같은 시점 Tempo 336MiB·refused 0·live traces 688(상한 10000), Alloy 571MiB
+	//   (둘 다 limit 1Gi)라 한도 안에 든다.
+	// 운영값은 이 상수가 아니라 env 로 정한다 — 환경마다 폴링 건수가 달라진다.
+	//   여기 기본값은 env 를 안 주고 띄웠을 때 폴링이 전부 남지 않게 하는 안전값이다.
+	ratio := 0.05
 	if v := os.Getenv("OTEL_TRACES_SAMPLER_ARG"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
 			ratio = f
@@ -114,6 +138,7 @@ func initTracer(ctx context.Context) (func(context.Context) error, error) {
 	sampler := sdktrace.ParentBased(byRoute{
 		polling: sdktrace.TraceIDRatioBased(ratio),
 		rest:    sdktrace.AlwaysSample(),
+		never:   sdktrace.NeverSample(),
 	})
 
 	tp := sdktrace.NewTracerProvider(
