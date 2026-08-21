@@ -8,7 +8,7 @@
 
 > **이 GitHub 저장소는 읽기용 미러다.** 실제 작업은 로컬 작업 트리와 셀프호스트 GitLab(데스크탑 Docker)에서 하고, GitLab의 push mirroring이 여기로 자동 반영한다. MR·CI 파이프라인·컨테이너 레지스트리는 GitLab 쪽에 있어 이 저장소에는 결과(커밋)만 보인다.
 >
-> 인프라(k3s·GitOps·관측)는 [cgv-infra](https://github.com/sss654654/cgv-infra), 구축 과정 기록은 [블로그 연재](https://zed6740.tistory.com/category/Kubernetes)에 있다.
+> 인프라(k3s·GitOps·관측)는 [cgv-infra](https://github.com/sss654654/cgv-infra), 구축 과정 기록은 [블로그 연재](https://zed6740.tistory.com/category/HomeLab)에 있다.
 
 ---
 
@@ -114,10 +114,14 @@ docker compose up --build -d      # redis · mysql · kafka · queue · booking 
 
 - **k3s dev 클러스터에서 운영 중**: push → GitLab CI 5단 게이트(check·test·build·scan·publish) → 불변 태그(`dev-<파이프라인>-<커밋>`) 이미지 → argocd-image-updater가 태그를 GitOps 저장소에 write-back → Argo CD 롤아웃. 배포 선언·클러스터 구성은 [cgv-infra](https://github.com/sss654654/cgv-infra)에 있다.
 - **관측**: metric·log·trace 세 축이 세 서비스에 계측돼 있고, 클러스터의 LGTM 스택(Mimir·Loki·Tempo + Alloy·Grafana)으로 흐른다. 로컬 compose에는 수집 스택이 없어 exporter가 조용히 쉰다.
+- **세 축이 서로 이어져 있다**: p99 그래프의 exemplar를 누르면 그 요청의 트레이스로, 트레이스에서 그 요청이 남긴 로그로 건너간다. 트레이스에는 HTTP·Kafka뿐 아니라 SQL 구간과 Redis 명령이 span으로 들어 있어, 예매 확정 한 건이 21개 span으로 쪼개진다. Kafka를 넘는 경로(입장 승격 → 인증 발급, 예매 확정 → 자리 반환)도 한 트레이스로 이어진다.
+- **트레이스 표본은 경로마다 다르다**: booking은 전부, queue의 폴링 셋은 1%, 프로브는 만들지 않는다. 폴링이 요청의 97%라 같은 비율을 전 경로에 걸면 서비스 경계를 넘는 트레이스가 남지 않는다.
+- **부하로 스펙을 정했다**: 정원·세션 타임아웃·CPU/메모리 limit·커넥션 풀을 판 스물한 번으로 확정했고, "목표를 넣으면 스펙이 나오는" 계수 열 개를 남겼다(예: `booking CPU = 0.007 + 0.0258 × 확정/초`). 값보다 그 근거가 산출물이다.
 - **노출은 LAN까지**: 인터넷 공개는 인증·TLS·rate limit을 갖춘 뒤다. 대기열·예매 API가 무인증이라 그 전에 열면 정원 점유·데이터 오염에 무방비다.
-- **다음**: 자동 테스트(CI의 빈 test 게이트 채우기) → NetworkPolicy·RBAC → 부하 실측으로 정원·리소스 확정.
+- **다음**: 외부 접근·보안(TLS·인증·노출 최소화·NetworkPolicy·RBAC) → 그 뒤 인원 계단을 한 번 더 돌려 Redis 단독 상한 실측.
 
-배포 시 되돌릴 데모값: `MAX_SESSIONS` 2 → 측정값 · `SESSION_TIMEOUT` 60 → 600 · `SEAT_LOCK_TTL` 45 → 300.
+운영 전환 시 되돌릴 값: `SESSION_TIMEOUT` 60 → 600 · `SEAT_LOCK_TTL` 45 → 300.
+`MAX_SESSIONS`는 500이 실측 확정값이다.
 
 ---
 
