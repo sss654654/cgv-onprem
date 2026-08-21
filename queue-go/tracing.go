@@ -15,10 +15,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// neverSampled = 트레이스를 아예 만들지 않을 경로.
-// 프로브는 span 이 하나(/health/live) 또는 둘(/health/ready 는 Redis ping 하나)이라
-// 열어도 나오는 게 "빨랐다" 뿐이고, kubelet 이 파드마다 주기적으로 부른다.
-// 프로브 실패는 kube_pod_status_ready 와 재시작 횟수로 본다 — 트레이스가 답할 자리가 아니다.
+// neverSampled = 트레이스를 생성하지 않을 경로.
+// 프로브 트레이스는 span 이 1개(/health/live) 또는 2개(/health/ready 는 Redis ping 포함)다.
+// kubelet 이 파드마다 주기적으로 호출한다(liveness 10초 · readiness 5초).
+// 프로브 상태는 kube_pod_status_ready 와 재시작 횟수로 확인한다.
 var neverSampled = map[string]struct{}{
 	"/health/live":  {},
 	"/health/ready": {},
@@ -108,7 +108,7 @@ func initTracer(ctx context.Context) (func(context.Context) error, error) {
 		return nil, err
 	}
 
-	// OTEL_TRACES_SAMPLER_ARG = **폴링 경로에만** 걸리는 비율(기본 0.05). 나머지는 전부 남긴다.
+	// OTEL_TRACES_SAMPLER_ARG = **폴링 경로에만** 걸리는 비율(기본 0.01). 나머지는 전부 남긴다.
 	//
 	// 비율 하나를 전 경로에 걸면 두 요구가 충돌한다. 폴링은 사용자당 수십-수백 건이라
 	//   전부 남기면 Tempo 가 버리고 Alloy RSS 가 limit 의 94% 까지 오르지만(1.0 실측),
@@ -117,17 +117,19 @@ func initTracer(ctx context.Context) (func(context.Context) error, error) {
 	// 그래서 폴링만 낮추고 나머지는 전부 남긴다. enter 는 사용자당 1 회, 승격 발행은
 	//   초당 십여 건이라 전부 남겨도 총량이 폴링에 묻힌다.
 	//
-	// 0.01 에서 0.05 로 올린 근거(2026-08-20, 정원 300 · 8분 부하).
-	//   exemplar 는 스크레이프(15초)마다 버킷당 하나까지 붙는다. 그런데 position 의 p99 구간
-	//   (le=2.5)에 붙은 점은 8분 동안 두 개였다 — 그 창에 표본으로 뽑힌 요청이 없어서다.
-	//   실제 p99 는 2,432ms 인데 점이 가리키는 최대는 1,363ms 였다. 가장 느린 요청을 여는 것이
-	//   이 배선의 목적인데 그 자리가 비어 있었다.
-	//   0.05 면 폴링 span 이 23/초에서 113/초가 되고 총량은 610 → 약 700/초다(부하 피크 실측).
-	//   같은 시점 Tempo 336MiB·refused 0·live traces 688(상한 10000), Alloy 571MiB
-	//   (둘 다 limit 1Gi)라 한도 안에 든다.
-	// 운영값은 이 상수가 아니라 env 로 정한다 — 환경마다 폴링 건수가 달라진다.
-	//   여기 기본값은 env 를 안 주고 띄웠을 때 폴링이 전부 남지 않게 하는 안전값이다.
-	ratio := 0.05
+	// 0.05 로 올려 본 판(2026-08-21)에서 얻은 것이 없어 0.01 로 되돌렸다.
+	//   두 판의 부하 조건은 6000 VU · 6분으로 같다.
+	//   exemplar 수   position 302개(0.01) → 264개(0.05). 표본을 5배로 올려도 늘지 않는다.
+	//                 exemplar 는 스크레이프(15초)마다 히스토그램 버킷당 하나가 한도라
+	//                 표본이 아니라 그 한도가 개수를 정한다.
+	//   live traces   오픈 직후 1분에 1,150(0.01) → 10,000(0.05).
+	//                 10,000 은 Tempo 의 max_traces_per_user 값이고, 그 1분에 span 4,527건이
+	//                 live_traces_exceeded 로 버려졌다.
+	//   평상 구간      둘 다 700-1,600 으로 한도의 7-16%. 차이가 없다.
+	// 느린 요청을 훑는 것은 exemplar 가 아니라 TraceQL 검색이 한다.
+	//   { name = "GET /api/admission/position" && duration > 1s }
+	// 운영값은 env 로 정한다. 이 상수는 env 미설정 시의 기본값이다.
+	ratio := 0.01
 	if v := os.Getenv("OTEL_TRACES_SAMPLER_ARG"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
 			ratio = f
