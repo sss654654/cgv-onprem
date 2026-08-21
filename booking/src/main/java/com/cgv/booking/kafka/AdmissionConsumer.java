@@ -33,14 +33,26 @@ public class AdmissionConsumer {
         // 이 값이 있어야 "정원 30인데 실제 동시 예매가 20"의 원인에서 전달 지연을 지울 수 있다.
         // 두 서비스의 발행/소비 건수는 각각 지표로 나오지만, 한 건이 건너오는 데 걸린 시간은
         //   어느 지표에도 없다.
-        // 경계는 http.server.requests와 같은 눈금으로 둔다.
+        // 10초까지는 http.server.requests와 같은 눈금이고, 그 위는 이 지표에만 있다.
+        // 상한을 10초에서 60초로 넓힌 이유 — 2026-08-21 정원 500 부하에서 p50·p99가 모두
+        //   10초(당시 최상단 버킷)에 붙었다. 최상단에 몰리면 분위수가 그 경계값으로 나와,
+        //   실제가 10초인지 40초인지 구분이 안 되는 채로 화면에는 "10초"가 뜬다.
+        //   같은 판에서 /api/screenings 의 403이 200의 2.4배였다(승격 9.0/초 · 200 9.48/초 ·
+        //   403 22.71/초). 자리를 받고 인증을 기다리는 동안 게이트에 막혀 재시도한 것이고,
+        //   그 대기 시간이 이 지표다.
+        // 60초를 상한으로 두는 근거는 세션 타임아웃(SESSION_TIMEOUT=60)이다. 전달이 그보다
+        //   길어지면 그 사용자는 이미 회수되므로, 그 위를 더 나눠도 판단이 달라지지 않는다.
+        // 반대 방향과 비교하면 원인 범위가 좁아진다. 같은 판에서 queue_completed_lag_seconds
+        //   (확정 발행 → 자리 반환 처리)는 p50 0.032초 · p99 0.080초였다. 같은 Kafka 를 쓰는데
+        //   방향에 따라 자릿수가 다르므로, 느린 것은 브로커가 아니라 admissions 경로 쪽이다.
         this.lag = Timer.builder("booking.admission.lag")
                 .description("승격 발행(queue) → 입장 인증 발급(booking) 지연")
                 .serviceLevelObjectives(
                         Duration.ofMillis(1), Duration.ofMillis(5), Duration.ofMillis(10),
                         Duration.ofMillis(25), Duration.ofMillis(50), Duration.ofMillis(100),
                         Duration.ofMillis(250), Duration.ofMillis(500), Duration.ofSeconds(1),
-                        Duration.ofMillis(2500), Duration.ofSeconds(5), Duration.ofSeconds(10))
+                        Duration.ofMillis(2500), Duration.ofSeconds(5), Duration.ofSeconds(10),
+                        Duration.ofSeconds(20), Duration.ofSeconds(30), Duration.ofSeconds(60))
                 .register(meterRegistry);
     }
 
