@@ -136,6 +136,19 @@ var completedLag = promauto.NewHistogram(prometheus.HistogramOpts{
 	},
 })
 
+// completedTotal = 자리 반환을 실제로 처리한 건수. 위 히스토그램의 _count 와 나눠 둔다.
+//
+// 히스토그램은 음수 지연을 버린다(아래 ObserveCompletedLag). 발행 시각이 booking 파드의
+//   시계라 queue 노드가 뒤에 있으면 지연이 음수로 나오는데, 소비 지연이 수 ms 대이고
+//   노드 간 NTP 오차가 그 급이라 관측이 통째로 빠진다 — 2026-08-23 실측에서 확정 3,400 건
+//   중 히스토그램에 남은 것이 1,685 건이었다(소비 성공 로그는 3,505 건).
+// 그때 _count 를 반환 건수로 읽으면 "확정보다 반환이 적다 = 전달이 샌다" 로 잘못 읽힌다.
+//   이 카운터는 시계와 무관하게 소비 성공마다 오르므로 발행 건수와 직접 대조된다.
+var completedTotal = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "queue_completed_total",
+	Help: "예매 확정을 받아 자리를 반환한 건수 — 시계 오차와 무관하게 소비 성공마다 증가",
+})
+
 // ObserveCompletedLag — 메시지의 발행 시각과 지금의 차. 발행 시각은 카프카 레코드
 // 타임스탬프(기본 CreateTime)라 booking 파드의 시계로 찍힌다 — 두 노드의 시계 차이가
 // 그대로 오차로 섞인다. 시계가 역전돼 음수가 나오면 지연이 아니라 잡음이므로 버린다.
@@ -143,6 +156,7 @@ var completedLag = promauto.NewHistogram(prometheus.HistogramOpts{
 // 붙는 exemplar를 누르면 예매 확정(booking) → Kafka → 자리 반환(queue)이 한 트레이스로 열린다
 // — 순환이 닫히는 구간 전체다. 표본에 남은 것에만 붙인다(없는 트레이스를 가리키지 않게).
 func ObserveCompletedLag(ctx context.Context, d time.Duration) {
+	completedTotal.Inc()
 	if d < 0 {
 		return
 	}
