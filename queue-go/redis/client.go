@@ -65,8 +65,17 @@ func New(addr, password string, poolSize int, masterName string, sentinelAddrs [
 //
 // 지표(metrics)는 켜지 않는다. 명령·상태별 카운터가 시리즈를 늘리는데, 같은 판단을
 // queue_redis_pool 계열과 redis_exporter 가 이미 준다.
+//
+// WithDBStatement(false) — 기본값이 true 라 명령 인자가 db.statement 에 통째로 실린다.
+// Tempo 에 저장된 실제 span 에서 확인한 값:
+//   evalsha <sha> 6 sessions:{1}:active ... 500 <requestId> <ms> 1
+//   zrem pending_events:{1} A|ENTER|<requestId>
+// requestId 는 클라이언트가 만들어 보관하는 대기열 식별자다. 끄지 않으면 그 값이
+// 트레이스 저장소에 남고, 트레이스를 조회할 수 있는 사람은 누구나 읽는다.
+// 끄면 db.statement 가 명령 이름만 남는다 — 어느 명령에서 느렸는지는 그대로 보이므로
+// 이 계측을 넣은 목적(요청 안에서 Redis 구간을 가르는 것)은 유지된다.
 func instrument(rdb *goredis.Client) *goredis.Client {
-	if err := redisotel.InstrumentTracing(rdb); err != nil {
+	if err := redisotel.InstrumentTracing(rdb, redisotel.WithDBStatement(false)); err != nil {
 		slog.Warn("redis 트레이싱 계측 실패(트레이스 없이 계속)", "err", err)
 	}
 	return rdb
