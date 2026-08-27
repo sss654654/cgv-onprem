@@ -13,6 +13,9 @@ import { goHome } from './booking.js';
 
 const CHUNK = 6;        // 동일 오리진 동시연결 한도 안에서의 병렬 폭
 const TICK_MS = 3000;   // 가상 관객 폴링 주기
+// 한 틱에서 자동 예매에 쓸 수 있는 시간. 나머지는 생존 폴링 몫으로 남긴다 —
+//   폴링이 끊기면 서버가 대기자를 회수하므로, 예매보다 폴링이 먼저다.
+const BOOK_BUDGET_MS = 1200;
 
 // ================= 스트립 =================
 const DOT_CLASS = { lobby: 'd-lobby', waiting: 'd-wait', admitted: 'd-in', booked: 'd-book', gone: 'd-gone' };
@@ -153,23 +156,32 @@ export async function botTick() {
       }));
     }
 
-    // ② 자동 예매 여정 — 입장자는 정원만큼이라 순차로 충분하다
+    // ② 자동 예매 여정.
+    // 한 명이 네 번 왕복하는데(회차·좌석·선점·예매) 이것을 전원에 대해 순차로 돌면
+    //   입장자가 많을 때 틱 하나가 수십 초가 된다. 그동안 ①이 못 돌고, 폴링이 곧 생존
+    //   도장이라 서버가 대기자를 전원 회수한다 — 예매를 시키려다 줄을 지우는 셈이다.
+    // 그래서 둘을 건다: 청크 단위 병렬로 왕복을 겹치고, 남은 인원은 다음 틱으로 미룬다.
+    //   미뤄도 손해가 없다 — 입장 자격은 세션이 살아 있는 동안 유지된다.
+    const bookDeadline = Date.now() + BOOK_BUDGET_MS;
     if (canBook) {
-      for (const f of S.fakes) {
-        if (gen !== S.simGen) break;
-        if (f.state !== 'admitted') continue;
+      const ready = S.fakes.filter(f => f.state === 'admitted');
+      for (let i = 0; i < ready.length && gen === S.simGen; i += CHUNK) {
+        if (Date.now() > bookDeadline) break;   // 예산을 넘기면 여기서 끊고 ①을 지킨다
+        await Promise.all(ready.slice(i, i + CHUNK).map(async f => {
+        if (gen !== S.simGen) return;
+        if (f.state !== 'admitted') return;
 
         const sc = await api(`/api/screenings?movieId=${encodeURIComponent(S.simMovieId)}&requestId=${encodeURIComponent(f.rid)}`);
-        if (!sc.ok || !sc.data) continue;   // 입장 직후 인증이 아직 없으면 403 — 다음 틱에 다시 시도한다
+        if (!sc.ok || !sc.data) return;   // 입장 직후 인증이 아직 없으면 403 — 다음 틱에 다시 시도한다
         const avail = sc.data.find(s => s.remain > 0);
-        if (!avail) { f.state = 'gone'; feedLog(`관객-${f.label} 퇴장 — 전 회차 매진`, 'gone'); continue; }
+        if (!avail) { f.state = 'gone'; feedLog(`관객-${f.label} 퇴장 — 전 회차 매진`, 'gone'); return; }
 
         const seats = await api(`/api/seats?screeningId=${encodeURIComponent(avail.screeningId)}&requestId=${encodeURIComponent(f.rid)}`);
         const free = (seats.data || []).find(s => !s.taken);
-        if (!free) continue;
+        if (!free) return;
 
         const sel = await api('/api/seats/select', { method: 'POST', body: { screeningId: avail.screeningId, seatNos: [free.seatNo], requestId: f.rid } });
-        if (!sel.ok) continue;
+        if (!sel.ok) return;
 
         const bk = await api('/api/bookings', { method: 'POST', body: { screeningId: avail.screeningId, seatNos: [free.seatNo], requestId: f.rid, idempotencyKey: `${f.rid}:${avail.screeningId}:${free.seatNo}` } });
         if (bk.ok) {
@@ -182,6 +194,7 @@ export async function botTick() {
           f.state = 'gone';
           feedLog(`관객-${f.label} 예매 실패 → 퇴장`, 'gone');
         }
+        }));
       }
     }
     renderStrip();
