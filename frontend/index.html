@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#0a0a0f" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23e2231a'/%3E%3Ctext x='32' y='45' font-size='38' font-weight='800' text-anchor='middle' fill='white' font-family='Arial,sans-serif'%3EC%3C/text%3E%3C/svg%3E" />
-  <title>티케팅 대기열 시뮬레이터 — CGV 예매 데모</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23e2231a'/%3E%3Ctext x='32' y='45' font-size='38' font-weight='800' text-anchor='middle' fill='white' font-family='Arial,sans-serif'%3ET%3C/text%3E%3C/svg%3E" />
+  <title>티케팅 대기열 시뮬레이터 — 예매 데모</title>
   <meta name="description" content="폭주 트래픽을 대기열로 받아내는 예매 시스템. 가상 관객을 투입해 대기열이 도는 것을 직접 굴려볼 수 있는 데모 — Go·Redis 대기열, Kafka, Java·MySQL 예매를 k3s에서 GitOps로 운영." />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="티케팅 대기열 시뮬레이터" />
@@ -32,7 +32,7 @@
   </svg>
   <!-- 상단 바 -->
   <header class="topbar">
-    <button type="button" class="brand" id="homeBtn" title="처음으로 — 진행 중이던 예매는 취소됩니다">CGV<span>예매</span><em class="sim-badge">SIMULATION</em></button>
+    <button type="button" class="brand" id="homeBtn" title="처음으로 — 진행 중이던 예매는 취소됩니다">TICKET<span>QUEUE</span><em class="sim-badge">DEMO</em></button>
     <div class="top-right">
       <div id="activeTimer" class="active-timer hidden">세션 <b>01:00</b></div>
       <div id="authArea" class="auth"></div>
@@ -94,8 +94,9 @@
                 </div>
               </div>
               <p class="intro-flow">입장 정원을 넘는 관객은 순번을 받아 기다리고, 자리가 빌 때마다 앞에서부터 입장합니다.</p>
-              <p class="intro-note">백엔드(대기열·좌석)는 모든 방문자가 공유합니다 — 다른 방문자의 가상 관객·러시가
-                 숫자와 대기열에 섞일 수 있습니다. 콘솔의 오픈 예약·가상 관객 표시는 이 브라우저에만 적용됩니다.</p>
+              <p class="intro-note">학습용 데모라 실제 예매가 아니고 결제도 일어나지 않습니다. 대기열과 좌석은 모든 방문자가
+                 공유하며 3시간마다 비워집니다 — 다른 방문자의 가상 관객·러시가 숫자에 섞일 수 있습니다.
+                 콘솔의 오픈 예약·가상 관객 표시는 이 브라우저에만 적용됩니다.</p>
               <p class="intro-links"><a href="https://github.com/sss654654/cgv-onprem" target="_blank" rel="noopener">GitHub 저장소 →</a></p>
             </div>
 
@@ -109,19 +110,6 @@
           <h2 class="list-title">지금 예매</h2>
           <div id="movieList" class="movie-list"></div>
 
-          <!-- 운영자 도구 — URL에 ?ops를 붙였을 때만 표시 -->
-          <section class="ops hidden" id="opsBox">
-            <div class="ops-head"><span>운영자 도구</span><span class="ops-cap">?ops 진입</span></div>
-            <div class="ops-row">
-              <label>초기화 토큰</label>
-              <input type="password" id="opsToken" placeholder="X-Admin-Token" autocomplete="off" />
-            </div>
-            <div class="ops-row">
-              <label>데이터 초기화</label>
-              <button class="btn small ghost" id="opsReset">예매·대기열 비우기</button>
-            </div>
-            <div class="ops-msg" id="opsMsg">예매 기록·좌석 점유·대기열을 지우고 방송일을 다시 잡습니다. 토큰은 서버에서 검증합니다.</div>
-          </section>
         </div>
 
         <!-- 오른쪽 — 시뮬레이터 콘솔 -->
@@ -157,11 +145,13 @@
                 <label class="ctl-check"><input type="checkbox" id="botMode" checked /> 자동 예매(자리 순환)</label>
                 <button class="btn small ghost" id="clearFakes">가상 관객 초기화</button>
               </div>
-              <div class="con-hint">
+              <!-- 콘솔에 이미 다섯 묶음이 쌓여 있어 설명을 상시 펼쳐 두면 밀도가 높다. 접어 둔다. -->
+              <details class="con-hint">
+                <summary>각 항목이 하는 일</summary>
                 <p><b>켜짐</b> 입장한 관객이 좌석을 예매하고 바로 자리를 반환합니다. 다음 대기자가 곧바로 승격됩니다.</p>
                 <p><b>꺼짐</b> 입장한 관객이 아무것도 하지 않고 세션 60초를 다 씁니다. 정원이 막힌 상황을 재현합니다.</p>
                 <p><b>가상 관객 초기화</b> 아직 줄에 있는 관객을 대기열에서 빼고 아래 목록을 비웁니다. 예매 기록(DB)은 그대로입니다.</p>
-              </div>
+              </details>
             </div>
 
             <div class="con-group">
@@ -236,6 +226,7 @@
         <div class="pay-row"><span>회차</span><b id="payScreening">-</b></div>
         <div class="pay-row"><span>좌석</span><b id="paySeats">-</b></div>
         <div class="pay-row total"><span>결제금액</span><b id="payAmount">0</b>원</div>
+        <div class="pay-note">결제는 흉내만 냅니다 — 실제 승인도 청구도 일어나지 않습니다.</div>
         <div class="pay-actions">
           <button class="btn ghost" id="payBack">← 뒤로</button>
           <button class="btn primary" id="payConfirm">결제 완료</button>

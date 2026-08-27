@@ -85,10 +85,15 @@ func NewProducer(ctx context.Context, broker string) *Producer {
 		// Topic을 Writer에 고정하지 않는다 — 입장(admissions)과 회수(admissions-revoked)를
 		// 같은 Writer로 보내려면 메시지마다 Topic을 지정해야 한다.
 		//
-		// Balancer=Hash + Key=requestId: 같은 사용자의 이벤트는 항상 같은 파티션으로 간다.
-		// 입장과 회수가 다른 파티션에 흩어지면 소비 순서가 뒤집혀 "회수 → 입장" 순으로 처리될 수
-		// 있고, 그러면 이미 자리를 잃은 사용자의 인증이 되살아난다. 사용자 간에는 순서 의존이
-		// 없으므로 requestId 단위 분산이 파티션을 고르게 쓰면서 필요한 순서만 지킨다.
+		// Balancer=Hash + Key=requestId: 같은 사용자의 이벤트는 한 토픽 안에서 항상 같은
+		// 파티션으로 간다. 사용자 간에는 순서 의존이 없어 파티션을 고르게 쓰면서 필요한 순서를 지킨다.
+		//
+		// ★ 이 라우팅이 지키는 것은 한 토픽 안의 순서다. 입장(admissions)과 회수(admissions-revoked)는
+		// 서로 다른 토픽이고 소비자도 각각 따로 돌아, 둘 사이의 처리 순서는 보장되지 않는다.
+		// 회수가 먼저 처리되면 뒤늦게 도착한 입장이 이미 자리를 잃은 사용자의 인증을 되살린다.
+		// 성립하려면 입장 소비가 세션 타임아웃(기본 60초)보다 오래 밀려야 한다 — 그 정도 지연은
+		// 이미 장애 구간이라 지금은 감수한다. 닫으려면 두 이벤트를 한 토픽으로 합치거나
+		// 소비 쪽에서 발행 시각을 비교해 오래된 입장을 버려야 한다.
 		Balancer:               &kafkago.Hash{},
 		AllowAutoTopicCreation: true,
 		// RequiredAcks 기본값(RequireNone)은 브로커 확인 없이 성공 반환 — "발행 실패 처리"가

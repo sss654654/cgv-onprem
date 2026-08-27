@@ -1,4 +1,4 @@
-// 부팅과 배선 — 이벤트 연결, 시계, 운영자 도구, 시작 시 상태 복구.
+// 부팅과 배선 — 이벤트 연결, 시계, 시작 시 상태 복구.
 
 import {
   S, K, store, $, onScreen, feedLog, renderFeed, saveRoster, sweepExpiredGate,
@@ -39,42 +39,6 @@ const setIntro = (open) => {
 setIntro(!store.get(K.INTRO_CLOSED));
 introToggle.onclick = () => setIntro($('introPanel').classList.contains('hidden'));
 
-// ================= 운영자 도구 =================
-// 주소의 ?ops는 폼을 여는 스위치일 뿐 잠금이 아니다. 판정은 서버가 토큰 헤더로 한다
-// (토큰을 주입하지 않은 배포에는 그 API 자체가 없다).
-function initOps() {
-  if (!new URLSearchParams(location.search).has('ops')) return;
-  $('opsBox').classList.remove('hidden');
-  const msg = $('opsMsg');
-  const btn = $('opsReset');
-
-  btn.onclick = async () => {
-    const token = $('opsToken').value.trim();
-    if (!token) { msg.textContent = '토큰을 입력하세요.'; return; }
-    if (!S.simMovieId) { msg.textContent = '상영 정보를 아직 불러오지 못했습니다 — 잠시 후 다시 시도하세요.'; return; }
-    if (!confirm('예매 기록과 대기열을 전부 지웁니다. 계속할까요?')) return;
-
-    btn.disabled = true;
-    msg.textContent = '초기화 중…';
-    const headers = { 'Content-Type': 'application/json', 'X-Admin-Token': token };
-    // 대기열을 먼저 비운다 — 예매를 지우는 동안 새로 승격된 관객이 좌석을 잡아 잔재가 남지 않게.
-    const q = await fetch('/api/admission/reset', { method: 'POST', headers, body: JSON.stringify({ movieId: S.simMovieId }) }).catch(() => null);
-    const b = await fetch('/api/admin/reset', { method: 'POST', headers }).catch(() => null);
-    btn.disabled = false;
-
-    if (!q || !b || !q.ok || !b.ok) {
-      const code = [q && q.status, b && b.status].filter(Boolean).join('/');
-      msg.textContent = `초기화 실패 (${code || '연결 불가'}) — 토큰이나 서버 상태를 확인하세요.`;
-      return;
-    }
-    const info = await b.json().catch(() => ({}));
-    msg.textContent = `초기화 완료 — 예매 ${info.bookingsDeleted ?? 0}건 삭제, 방송일 ${(info.broadcastAt || '').slice(0, 16).replace('T', ' ')}`;
-    clearFakes();
-    feedLog('데이터 초기화 — 예매와 대기열을 비웠습니다', 'sys');
-    loadMovies();
-  };
-}
-
 // ================= 시계 =================
 // 오픈 예약이 걸리면 이 시계가 기준이 된다. 대기 화면의 생존 신호 표시도 같은 틱에서 그린다.
 function startClock() {
@@ -103,7 +67,6 @@ window.addEventListener('pagehide', saveRoster);
   renderAuth();
 
   initConsole();
-  initOps();
   adoptRoster();     // 명단 이어받기는 목록을 그리기 전에 — 스트립이 처음부터 차 있게
   renderStrip();
   renderFeed();

@@ -3,7 +3,7 @@
 
 import {
   S, K, store, $, show, onScreen, toast, api, uuid, sleep, esc,
-  PRICE, SESSION_SEC, fmtEta, feedLog, effectiveGate, releaseSeats, leaveQueue,
+  PRICE, SESSION_SEC, fmtEta, feedLog, effectiveGate, releaseSeats, leaveQueue, clearOpen,
 } from './core.js';
 import { pollStats, pollEvents } from './live.js';
 
@@ -57,11 +57,16 @@ export async function loadMovies() {
   const { ok, data } = await api('/api/movies');
   const list = $('movieList');
   list.innerHTML = '';
-  if (!ok || !data || !data.length) {
+  // 요청이 실패한 것과 목록이 비어 있는 것을 나눈다 — 후자는 정상 응답이라 재시도할 일이 아니다.
+  if (!ok) {
     // 순단(롤링 재시작 등)에 걸린 방문자가 새로고침 없이 살아나게 자동으로 다시 시도한다.
     list.innerHTML = '<p class="load-err">상영 정보를 불러오지 못했습니다 — 5초 후 다시 시도합니다.</p>';
     clearTimeout(loadMovies._t);
     loadMovies._t = setTimeout(loadMovies, 5000);
+    return;
+  }
+  if (!data || !data.length) {
+    list.innerHTML = '<p class="load-empty">지금 예매할 수 있는 상영이 없습니다.</p>';
     return;
   }
   S.simMovieId = data[0].id;     // 시뮬레이터가 쓸 영화
@@ -85,7 +90,7 @@ export async function loadMovies() {
     };
     // 오픈 대기 중에도 지금 바로 체험할 수 있는 탈출구. 예약을 해제하면 게이트가 사라진다.
     card.querySelector('.gate-skip').onclick = () => {
-      store.del(K.OPEN_AT, K.OPEN_N, K.OPEN_FIRED);
+      clearOpen();   // 콘솔의 "해제" 버튼과 같은 헬퍼 — 게이트 키가 늘어도 한 곳만 고치면 된다
       feedLog('오픈 예약을 해제하고 지금 열었습니다', 'sys');
       document.dispatchEvent(new CustomEvent('gate:changed'));
     };
@@ -284,8 +289,18 @@ export async function openSeats(screeningId, label, keepMine = false) {
 
 async function loadSeats() {
   const { ok, data } = await api(`/api/seats?screeningId=${encodeURIComponent(S.screeningId)}&requestId=${encodeURIComponent(S.rid)}`);
-  if (!ok) { toast('좌석 정보를 불러오지 못했습니다.', true); return; }
   const grid = $('seatGrid');
+  // 조회가 실패하면 좌석도를 비운 채 두지 않는다 — 빈 그리드는 매진이나 고장으로 보이고,
+  // 토스트는 몇 초 뒤 사라져 남는 설명이 없다. 화면 안에 상태와 재시도를 함께 남긴다.
+  if (!ok) {
+    toast('좌석 정보를 불러오지 못했습니다.', true);
+    grid.style.removeProperty('--seat-cols');
+    grid.innerHTML = '<p class="load-err">좌석 정보를 불러오지 못했습니다.'
+      + ' <button type="button" class="linklike" id="seatRetry">다시 시도</button></p>';
+    const retry = $('seatRetry');
+    if (retry) retry.onclick = () => loadSeats();
+    return;
+  }
   grid.innerHTML = '';
 
   const rows = {};

@@ -30,7 +30,10 @@ func (c *Client) Reset(ctx context.Context, movieID string, nowSec int64) error 
 	pipe.Del(ctx, keys...)
 	pipe.SRem(ctx, ActiveMoviesKey, movieID)
 	pipe.SRem(ctx, WaitingMoviesKey, movieID)
-	pipe.Del(ctx, PromotePauseKey)
+	// PromotePauseKey 는 지우지 않는다. movieID 가 안 붙은 전 영화 공통 키라,
+	// 여기서 지우면 한 영화의 초기화가 다른 영화의 승격 일시정지까지 조기 해제한다.
+	// 그 플래그는 Kafka 발행 실패로 걸리고 TTL 로 스스로 풀린다 — 발행이 아직 안 되는데
+	// 승격이 재개되면 실패가 그대로 반복된다.
 	_, err := pipe.Exec(ctx)
 	return err
 }

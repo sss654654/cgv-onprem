@@ -39,6 +39,8 @@
   /* ── 타입 스케일 ── */
   --fs-2xs:11px; --fs-xs:12px; --fs-sm:13px; --fs-md:14px;
   --fs-lg:16px;  --fs-xl:19px; --fs-2xl:24px; --fs-3xl:34px;
+  /* 디스플레이 — 대기 순번처럼 화면에서 가장 큰 숫자에만 */
+  --fs-4xl:44px; --fs-5xl:52px;
 
   /* ── 간격·라운드·그림자·모션 ── */
   --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px;
@@ -79,7 +81,7 @@ body{
 }
 .brand{
   font-family:inherit;background:none;border:0;padding:0;
-  font-weight:800;font-size:21px;letter-spacing:-.03em;cursor:pointer;color:var(--brand);
+  font-weight:800;font-size:var(--fs-xl);letter-spacing:-.03em;cursor:pointer;color:var(--brand);
 }
 .brand span{color:var(--txt);margin-left:5px;font-weight:600}
 .top-right{display:flex;align-items:center;gap:14px}
@@ -93,7 +95,7 @@ body{
 /* ── 버튼 ── */
 .btn{
   border:1px solid transparent;border-radius:var(--r-1);
-  padding:12px 20px;font-size:15px;font-weight:700;cursor:pointer;
+  padding:12px 20px;font-size:var(--fs-lg);font-weight:700;cursor:pointer;
   color:var(--txt);background:var(--surface-3);
   transition:transform .12s var(--ease),background .15s,border-color .15s,opacity .15s;
   font-family:inherit;
@@ -106,7 +108,8 @@ body{
 .btn.primary:disabled{background:#3a262c;color:#c49a95;cursor:not-allowed;box-shadow:none}
 .btn.ghost{background:transparent;border-color:var(--line)}
 .btn.ghost:hover{background:var(--surface-2);border-color:var(--txt-3)}
-.btn.small{padding:8px 13px;font-size:var(--fs-sm)}
+/* min-height 44px = 모바일 권장 터치 영역. 콘솔 버튼들이 촘촘히 붙어 있어 오탭이 난다 */
+.btn.small{padding:8px 13px;font-size:var(--fs-sm);min-height:44px}
 .btn.big{padding:14px 28px;font-size:var(--fs-lg)}
 
 /* ── 상영 배너 ──
@@ -153,10 +156,10 @@ body{
   border-radius:50%;animation:spin .9s linear infinite;
 }
 @keyframes spin{to{transform:rotate(360deg)}}
-.wait-title{font-size:17px;font-weight:700;color:var(--txt-2);margin-bottom:var(--sp-5)}
+.wait-title{font-size:var(--fs-lg);font-weight:700;color:var(--txt-2);margin-bottom:var(--sp-5)}
 .wait-rank{font-size:var(--fs-md);color:var(--txt-3)}
 .wait-rank b{
-  font-size:52px;line-height:1.05;color:var(--brand-strong);font-weight:800;
+  font-size:var(--fs-5xl);line-height:1.05;color:var(--brand-strong);font-weight:800;
   display:block;margin:6px 0;letter-spacing:-.03em;font-variant-numeric:tabular-nums;
 }
 .wait-total{
@@ -227,9 +230,10 @@ body{
   box-shadow:0 6px 20px rgba(46,204,113,.35);animation:pop .45s var(--ease);
 }
 @keyframes pop{from{transform:scale(.5);opacity:0}to{transform:scale(1);opacity:1}}
-.pay-row{display:flex;justify-content:space-between;align-items:center;padding:15px 0;border-bottom:1px solid var(--line-soft);font-size:15px}
+.pay-row{display:flex;justify-content:space-between;align-items:center;padding:15px 0;border-bottom:1px solid var(--line-soft);font-size:var(--fs-md)}
 .pay-row span{color:var(--txt-3)}
 .pay-row b{font-variant-numeric:tabular-nums}
+.pay-note{margin-top:14px;font-size:var(--fs-xs);color:var(--txt-3);text-align:center}
 .pay-row.total{border-bottom:0;font-size:var(--fs-xl);margin-top:var(--sp-2)}
 .pay-row.total b{color:var(--brand-strong)}
 .pay-actions{display:flex;gap:var(--sp-3);margin-top:var(--sp-5)}
@@ -244,7 +248,7 @@ body{
 .auth{display:flex;align-items:center;gap:10px}
 .auth .who{font-size:var(--fs-md);color:var(--txt-2)}
 .auth .who i{color:var(--brand-strong);font-style:normal;font-weight:700}
-.sim-badge{font-style:normal;font-size:10px;font-weight:800;letter-spacing:.12em;color:var(--brand-strong);border:1px solid var(--brand-line);background:var(--brand-tint);padding:2px 7px;border-radius:var(--r-full);margin-left:9px;vertical-align:3px}
+.sim-badge{font-style:normal;font-size:var(--fs-2xs);font-weight:800;letter-spacing:.12em;color:var(--brand-strong);border:1px solid var(--brand-line);background:var(--brand-tint);padding:2px 7px;border-radius:var(--r-full);margin-left:9px;vertical-align:3px}
 
 /* ── 토스트 ── */
 .toast{position:fixed;left:50%;bottom:44px;transform:translateX(-50%);background:var(--surface-3);border:1px solid var(--line);padding:14px 24px;border-radius:var(--r-2);font-size:var(--fs-md);font-weight:600;z-index:50;box-shadow:var(--sh-3);animation:toastin .28s var(--ease);max-width:calc(100vw - 32px);text-align:center}
@@ -254,7 +258,7 @@ body{
 /* ── 히어로 ── */
 .hero{margin:6px 0 var(--sp-6)}
 .hero-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
-.hero h1{margin:0 0 10px;font-size:36px;font-weight:800;letter-spacing:-.035em}
+.hero h1{margin:0 0 10px;font-size:var(--fs-3xl);font-weight:800;letter-spacing:-.035em}
 .linklike{background:none;border:none;color:var(--txt-3);font-size:var(--fs-sm);font-weight:600;cursor:pointer;font-family:inherit;padding:0}
 .linklike:hover{color:var(--brand-strong)}
 .hero-sub{margin:0 0 16px;color:var(--txt-2);font-size:var(--fs-lg);line-height:1.7}
@@ -281,7 +285,7 @@ body{
 .arch-txt{display:flex;flex-direction:column;align-items:center;gap:2px}
 .arch-node b{font-size:var(--fs-sm);color:var(--txt);letter-spacing:-.01em}
 .arch-node i{font-style:normal;font-size:var(--fs-2xs);color:var(--txt-3);line-height:1.45}
-.arch-arrow{align-self:center;color:var(--txt-3);font-weight:700;flex:none;font-size:15px}
+.arch-arrow{align-self:center;color:var(--txt-3);font-weight:700;flex:none;font-size:var(--fs-md)}
 .arch-base{display:flex;gap:22px;align-items:center;justify-content:center;font-size:var(--fs-xs);color:var(--txt-3);font-weight:600;margin-top:9px;padding-top:9px;border-top:1px dashed var(--line)}
 .arch-base span{display:inline-flex;align-items:center;gap:7px}
 .arch-base svg{width:14px;height:14px;fill:currentColor}
@@ -289,25 +293,21 @@ body{
 /* ── 신원 안내·현황 타일 ── */
 .id-hint{margin:0 0 14px;padding:11px 16px;background:var(--brand-tint);border:1px solid var(--brand-line);border-radius:var(--r-2);font-size:var(--fs-md);color:var(--txt)}
 .id-hint .linklike{color:var(--brand-strong);font-size:var(--fs-md);font-weight:800}
-.load-err{color:var(--txt-3);font-size:var(--fs-md)}
+/* 실패는 토스트·시계 경고와 같은 계열로 — 회색이면 본문과 구별이 안 돼 뭔가 잘못된 신호가 약하다 */
+.load-err{color:var(--brand-soft);font-size:var(--fs-md)}
+.load-err .linklike{color:var(--brand-strong);font-size:var(--fs-md);font-weight:800;margin-left:4px}
+/* 비어 있는 것은 실패가 아니다 — 본문 색을 그대로 쓴다 */
+.load-empty{color:var(--txt-3);font-size:var(--fs-md)}
 .stats-bar{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
-.stats-bar.stale{opacity:.55}
+/* 연속 실패로 갱신이 멈춘 값 — 현황 막대와 실황 목록이 같은 표시를 쓴다 */
+.stats-bar.stale,.qv-feed.stale{opacity:.55}
 .stat{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--r-2);padding:14px 20px;display:flex;flex-direction:column;gap:4px;min-width:110px}
 .stat em{font-style:normal;font-size:var(--fs-xs);color:var(--txt-3);font-weight:700;letter-spacing:.05em}
-.stat b{font-size:26px;color:var(--txt);font-variant-numeric:tabular-nums;font-weight:800;display:block}
+.stat b{font-size:var(--fs-2xl);color:var(--txt);font-variant-numeric:tabular-nums;font-weight:800;display:block}
 .stat b.bump{animation:bump .5s var(--ease)}
 @keyframes bump{30%{transform:scale(1.14);color:var(--brand-strong)}}
 .list-title{font-size:var(--fs-sm);font-weight:800;margin:0 0 var(--sp-4);color:var(--txt-3);letter-spacing:.07em}
 input[type="checkbox"]{accent-color:var(--brand)}
-
-/* ── 운영자 도구 (?ops) ── */
-.ops{margin:0 0 var(--sp-4);padding:14px 18px;background:var(--surface-1);border:1px dashed var(--line);border-radius:var(--r-2)}
-.ops-head{font-size:var(--fs-sm);font-weight:800;color:var(--txt-2);margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
-.ops-cap{font-weight:600;color:var(--txt-3);font-size:var(--fs-xs)}
-.ops-row{display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap}
-.ops-row label{font-size:var(--fs-sm);color:var(--txt-3);min-width:96px}
-.ops-row input[type="password"]{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-1);color:var(--txt);padding:8px 10px;font-size:var(--fs-sm);font-family:inherit;width:190px}
-.ops-msg{font-size:var(--fs-xs);color:var(--txt-3);margin-top:8px;min-height:16px}
 
 /* ── 레이아웃 — 왼쪽 서비스 · 오른쪽 콘솔 ──
    1fr이 아니라 minmax(0,1fr): 안쪽 내용의 최소 폭이 트랙을 밀어내 페이지가 가로로 넘치는 것을 막는다. */
@@ -329,6 +329,11 @@ input[type="checkbox"]{accent-color:var(--brand)}
 .con-hint p{margin:0 0 4px}
 .con-hint p:last-child{margin-bottom:0}
 .con-hint b{color:var(--txt-2)}
+.con-hint>summary{cursor:pointer;color:var(--txt-2);font-weight:700;list-style:none;padding:3px 0;min-height:24px}
+.con-hint>summary::-webkit-details-marker{display:none}
+.con-hint>summary::after{content:" ▾";color:var(--txt-3)}
+.con-hint[open]>summary::after{content:" ▴"}
+.con-hint>summary+p{margin-top:6px}
 .con-note{font-size:var(--fs-xs);color:var(--warn);margin:-4px 0 10px 2px;font-variant-numeric:tabular-nums}
 .con-note:empty{margin:0}
 .con-clock{font-size:var(--fs-3xl);font-weight:800;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:.06em;text-align:center;background:var(--bg);border:1px solid var(--line-soft);border-radius:var(--r-2);padding:12px 0;margin-bottom:18px;transition:border-color .3s,color .3s}
@@ -389,7 +394,7 @@ select.slot.num{width:118px}
   .top-right{gap:8px}
   .auth .who{display:none}
   /* 시뮬레이션 표기는 좁은 화면에서도 남긴다 — 실제 예매 사이트로 오인되지 않게 */
-  .sim-badge{font-size:9px;letter-spacing:.06em;padding:2px 5px;margin-left:6px}
+  .sim-badge{font-size:var(--fs-2xs);letter-spacing:.06em;padding:2px 5px;margin-left:6px}
   select.slot{font-size:var(--fs-lg)}   /* iOS 포커스 자동 확대 방지 */
   .seat{min-width:24px}
   .arch-row{flex-direction:column;gap:6px}
@@ -401,9 +406,9 @@ select.slot.num{width:118px}
 }
 @media (max-width:520px){
   #app{padding:var(--sp-5) var(--sp-3) 64px}
-  .title{font-size:21px}
+  .title{font-size:var(--fs-xl)}
   .wait-card,.pay-card,.done-card{padding:30px 22px}
-  .wait-rank b{font-size:44px}
+  .wait-rank b{font-size:var(--fs-4xl)}
   .hero h1{font-size:var(--fs-2xl)}
   .brand{font-size:var(--fs-xl)}
 }

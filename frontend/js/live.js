@@ -82,10 +82,20 @@ const EVENT_TEXT = {
   RETURN:         ['자리 반환', 'book'],
 };
 
+let feedFails = 0;
+
 export async function pollEvents() {
   if (!S.simMovieId || !feedVisible()) return;
   const { ok, data } = await api(`/api/admission/events?movieId=${encodeURIComponent(S.simMovieId)}&after=${S.lastEventId}`);
-  if (!ok || !data) return;
+  const list = $('feedList');
+  // 현황 막대와 같은 규칙으로 낡음을 드러낸다 — 실황이 조용히 멈추면 방문자가 알 방법이 없다.
+  if (!ok || !data) {
+    feedFails += 1;
+    if (list && feedFails >= STALE_AFTER) list.classList.add('stale');
+    return;
+  }
+  feedFails = 0;
+  if (list) list.classList.remove('stale');
   // 데이터 초기화로 서버 피드가 비면 id가 뒤로 간다 — 커서를 버리고 처음부터 다시 받는다.
   if ((data.last || 0) < S.lastEventId) S.lastEventId = 0;
   (data.events || []).forEach(e => {

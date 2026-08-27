@@ -61,7 +61,7 @@ redis/             go-redis + Lua — Redis 접근을 전부 여기 가둠
   timeout.go         active·waiting 만료 Lua(원자 제거)
   leave.go           active·waiting·lastseen 3키 동시 제거(멱등)
   query.go           조회 헬퍼(대상 영화·대기 인원)
-metrics/rate.go    승격 처리율 EMA(α=0.3) — ETA 계산 재료(in-memory)
+metrics/rate.go    승격 처리율 — ETA 계산 재료. 값은 Redis 창 평균(redis/rate.go)에서 온다
 metrics/prom.go    promauto 계측 7벌(2026-07-05 신설) — 히스토그램·게이지·샘플러·/metrics :9091 서버(정본 = 설계서 1부 §7-B)
 kafka/kafka.go     producer(admissions, RequireOne·재시도) + consumer(bookings-completed → 처리 후 커밋 → active ZREM) + 실패 카운터 2종
 ```
@@ -75,7 +75,7 @@ kafka/kafka.go     producer(admissions, RequireOne·재시도) + consumer(bookin
 
 | 메서드 | 경로 | 기능 |
 |---|---|---|
-| POST | `/api/admission/enter` | 줄서기. 이미 active → 200 `ALREADY_ACTIVE`(자리 유지) / 자리 있음 → 200 `ADMITTED`(+Kafka 발행 — **발행 실패 시 보상 롤백 후 503 `RETRY_LATER`**, 2026-07-04) / 꽉 참 → 202 `WAITING`(rank·totalWaiting). **waiting 재진입 = 꼬리로 밀림**(ZREM 후 현재 시각으로 재ZADD) |
+| POST | `/api/admission/enter` | 줄서기. 이미 active → 200 `ALREADY_ACTIVE`(자리 유지) / 자리 있음 → 200 `ADMITTED`(+Kafka 발행 — **발행 실패 시 되돌리지 않고 저널에 남겨 재발행한다.** 롤백하면 유령 입장자 경로가 열린다) / 꽉 참 → 202 `WAITING`(rank·totalWaiting). **waiting 재진입 = 꼬리로 밀림**(ZREM 후 현재 시각으로 재ZADD) |
 | GET | `/api/admission/position?movieId=&requestId=` | 폴링 순번 조회 → `{ status, position, behind, etaSeconds }` |
 | POST | `/api/admission/leave` | 자발 이탈 — active·waiting·lastseen 전부 제거(멱등) |
 | POST | `/api/admission/complete` | active 종료 → 자리 반환. 실제론 booking이 Kafka `bookings-completed`로 대신해 프론트는 안 씀 |
@@ -119,7 +119,7 @@ kafka/kafka.go     producer(admissions, RequireOne·재시도) + consumer(bookin
 
 승격된 사람에게 일어나는 일 두 가지: ① 본인은 **다음 폴링에서 ADMITTED를 발견**(서버가 알려주지 않음) ② booking에 Kafka `admissions` 발행(admitted set — 없으면 좌석선택 403).
 
-**승격 rate = EMA (`metrics/rate.go`).** 2초 루프라 순간값이 "0, 0, 3, 0…"으로 요동 → α=0.3 지수이동평균으로 완만하게(Prometheus `rate()`와 같은 발상). 0명 틱도 반영해 승격이 멈추면 rate가 0으로 수렴 → ETA "계산 중"(-1) 가드.
+**승격 rate = Redis 창 평균 (`redis/rate.go`).** 2초 루프라 순간값이 "0, 0, 3, 0…"으로 요동한다. 초 단위 카운터를 Redis 에 쌓고 90초 창 전체를 평균 낸다. 파드 로컬 EMA 를 쓰지 않는 이유는 그 파일 주석에 있다 — 파드마다 값이 갈리고, 재시작하면 이력이 사라진다. 승격이 멈추면 rate 가 0 으로 수렴하고 ETA 는 "계산 중"(-1) 로 가드한다.
 
 **Kafka (서비스간 신호 — SSE 때와 동일, `kafka/kafka.go`):**
 
@@ -163,6 +163,6 @@ kafka/kafka.go     producer(admissions, RequireOne·재시도) + consumer(bookin
 - **순번 캐싱** (`position_cache:{movie}` 스냅샷) — 10만이 초당 폴링하면 ZRANK 폭격 → 리더가 1-2초마다 스냅샷을 굽고 폴링은 O(1) 읽기. 단 ADMITTED/EXPIRED **판정만은 캐시 말고 ZSCORE 직접**(입장 발견이 지연되면 안 됨).
 - ~~관측 계측(promauto)~~ → **✔완료(2026-07-05)**: metrics/prom.go 7벌 + /metrics :9091(설계서 1부 §7-B 정본). 구조화 로그(slog JSON)·트레이스(OTel)만 남음 — Loki·Tempo 붙일 때.
 - ~~graceful shutdown·automaxprocs·Sentinel-aware 클라이언트~~ → **✔완료**(graceful/automaxprocs 2026-07-04 · **Sentinel-aware 2026-07-16**: `NewFailoverClient` 토글). 실 failover는 §5 실클러스터 검증.
-- ~~Kafka 발행 실패 재시도~~ → **✔완료(2026-07-04)**: 재시도+보상 롤백+RETRY_LATER(정직한 실패) + 실패 카운터 노출(07-05).
+- ~~Kafka 발행 실패 재시도~~ → **✔완료**: 재시도(MaxAttempts=3) + 저널에 남겨 재발행 + 실패 카운터 노출. 보상 롤백은 넣었다가 뺐다 — 되돌리면 이미 입장 처리된 사용자가 큐로 돌아가 유령 입장자가 생긴다.
 
 부하 축은 SSE의 "유지되는 연결"에서 **RPS**로 바뀌었다 — 파드는 요청 사이에 아무것도 안 들고, 스케일은 표준 HPA(CPU/RPS)로 충분. Redis가 유일한 부하 지점이라 방어가 위 캐싱이다(상세 = 올인원 §1-7).

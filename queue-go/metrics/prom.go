@@ -259,6 +259,11 @@ func sample(ctx context.Context, rdb *redis.Client, rate *RateProvider) {
 		waitingGauge.DeleteLabelValues(m)
 		activeGauge.DeleteLabelValues(m)
 		rateGauge.DeleteLabelValues(m)
+		// promotedTotal 도 같은 movie 라벨을 쓴다. 여기서 안 지우면 지나간 영화의
+		// 시리즈가 영구히 남아, 위 게이지를 지워 얻은 카디널리티 절감이 상쇄된다.
+		// movieId 는 형식만 검사하고 실재 여부는 확인하지 않으므로, 임의의 값으로
+		// 반복 호출되면 그만큼 라벨이 쌓인다.
+		promotedTotal.DeleteLabelValues(m)
 	}
 	trackedMovies = cur
 }

@@ -23,6 +23,19 @@ import (
 	"cgv-onprem/queue-go/redis"
 )
 
+// 요청 본문 상한. 이 서비스가 받는 본문은 movieId 하나 수준이라 넉넉히 잡아도 남는다.
+const maxRequestBodyBytes = 16 << 10 // 16 KiB
+
+// clientIP = 요청을 실제로 보낸 쪽의 주소. Cloudflare 뒤에서는 RemoteAddr 이 엣지 주소가
+// 되므로 엣지가 붙여 주는 헤더를 먼저 본다. 이 헤더들은 보내는 쪽이 위조할 수 있어
+// 신뢰 경계 밖에서 온 값으로 판정을 하지는 않는다 — 기록 용도다.
+func clientIP(c *gin.Context) string {
+	if v := c.GetHeader("CF-Connecting-IP"); v != "" {
+		return v
+	}
+	return c.ClientIP()
+}
+
 func main() {
 	// 0) 구조화 로그 — slog JSON을 기본 로거로. 표준 log 패키지 출력도 이리로 재라우팅되어
 	//    기존 log.Printf 호출부가 그대로 JSON으로 나간다. 다른 초기화보다 먼저 세운다.
@@ -101,6 +114,28 @@ func main() {
 	r.Use(otelgin.Middleware("queue-go")) // 요청마다 서버 span 생성
 	r.Use(metrics.GinMiddleware())        // span 안쪽 · Recovery 바깥
 	r.Use(gin.Recovery())
+
+	// 본문 크기 상한 — 인증 없이 호출되는 API 라 상한이 없으면 큰 본문을 보내는 것만으로
+	//   메모리를 밀어낼 수 있다. 핸들러의 필드 검증은 역직렬화가 끝난 뒤에 도는 것이라
+	//   읽는 것 자체를 막지 못한다. 이 API 들의 본문은 movieId 하나 수준이다.
+	r.Use(func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestBodyBytes)
+		c.Next()
+	})
+
+	// 요청 로그 — 남용이 생겼을 때 출발지를 가릴 수 있어야 한다. Cloudflare 뒤에서는
+	//   RemoteAddr 이 엣지 주소라, 엣지가 붙여 주는 CF-Connecting-IP 를 먼저 본다.
+	//   gin.Default() 대신 gin.New() 를 쓰고 있어 기본 요청 로그가 돌지 않는다.
+	r.Use(func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		if path := c.FullPath(); path != "" {
+			slog.InfoContext(c.Request.Context(), "request",
+				"method", c.Request.Method, "path", path,
+				"status", c.Writer.Status(), "ms", time.Since(start).Milliseconds(),
+				"client_ip", clientIP(c))
+		}
+	})
 
 	// 8) 라우트 — 헬스 + 대기열(enter·position·leave·complete).
 	health := handler.NewHealth(rdb)

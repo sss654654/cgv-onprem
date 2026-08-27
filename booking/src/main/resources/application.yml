@@ -2,6 +2,26 @@
 server:
   port: ${PORT:8091}
   shutdown: graceful            # SIGTERM 시 처리 중 요청 완료 후 종료
+  # 인증 없이 호출되는 API 라 본문 상한이 없으면 큰 본문을 보내는 것만으로 메모리를 밀어낼 수 있다.
+  #   @Valid 의 필드 검증(좌석 8개 등)은 역직렬화가 끝난 뒤에 도는 것이라 읽는 것 자체를 막지 못한다.
+  #   이 API 들이 받는 본문은 좌석 번호 몇 개 수준이다.
+  tomcat:
+    max-http-form-post-size: 16KB
+    max-swallow-size: 16KB
+    # 요청 로그 — 남용이 생겼을 때 출발지를 가릴 수 있어야 한다. Cloudflare 뒤에서는
+    #   remote addr 이 엣지 주소가 되므로 엣지가 붙여 주는 CF-Connecting-IP 를 함께 남긴다.
+    #   컨테이너라 파일이 아니라 stdout 으로 내보낸다. rotate·file-date-format 을 끄지 않으면
+    #   Tomcat 이 이름 뒤에 날짜를 붙여 /dev/stdout.2026-08-27 을 열려다 실패한다.
+    accesslog:
+      enabled: true
+      directory: /dev
+      prefix: stdout
+      suffix: ''
+      file-date-format: ''
+      rotate: false
+      buffered: false
+      pattern: '{"ts":"%t","method":"%m","path":"%U","status":%s,"ms":%D,"remote":"%a","client_ip":"%{CF-Connecting-IP}i"}'
+  max-http-request-header-size: 16KB
 
 spring:
   application:
