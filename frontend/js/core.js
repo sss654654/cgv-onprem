@@ -2,7 +2,14 @@
 // 다른 모듈은 전부 이 파일을 향하고, 이 파일은 아무것도 향하지 않는다(의존 방향 단일).
 
 export const PRICE = 6000;
-export const SESSION_SEC = 60;   // 서버 SESSION_TIMEOUT과 정합(데모 1분). 카운트다운 표시용.
+
+// active 세션 수명(초) — 화면의 잔여 시간 카운트다운이 쓰는 값.
+// 실제 회수는 서버의 SESSION_TIMEOUT이 정하므로, 이 값을 상수로 두면 env를 바꿨을 때
+//   화면만 옛 값으로 남아 "0초 남음"과 실제 회수 시점이 어긋난다.
+//   stats 응답의 sessionTimeoutSeconds로 갱신한다(아래 setSessionSec). 60은 첫 응답 전까지의 기본값.
+let sessionSec = 60;
+export const sessionSecs = () => sessionSec;
+export const setSessionSec = (v) => { const n = parseInt(v); if (n > 0) sessionSec = n; };
 
 // 한 탭이 동시에 유지할 수 있는 가상 관객 수. 브라우저 생성기의 한계이지 백엔드 정원이 아니다
 // — 동일 오리진 동시연결 6개로 생존 창(30초) 안에 전원을 폴링할 수 있는 규모.
@@ -33,7 +40,8 @@ export const S = {
 // 키를 한 곳에 모은다 — 문자열을 여기저기 적으면 지우는 곳과 쓰는 곳이 어긋난다.
 export const K = {
   AUTH: 'cgv_auth', FLOW: 'cgv_flow', ROSTER: 'cgv_roster',
-  CONSOLE: 'cgv_console', INTRO_CLOSED: 'cgv_intro_closed',
+  // 소개는 기본이 접힘이라 "편 선택"을 기억한다. 옛 키(cgv_intro_closed)는 반대 뜻이라 쓰지 않는다.
+  CONSOLE: 'cgv_console', INTRO_OPEN: 'cgv_intro_open',
   OPEN_AT: 'cgv_open_at_ms', OPEN_N: 'cgv_open_n', OPEN_FIRED: 'cgv_open_fired',
   OPEN_SEEDED: 'cgv_open_seeded', OPEN_HISTORY: 'cgv_open_history',
 };
@@ -90,8 +98,15 @@ export const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ 
 // 락을 안 돌려주면 TTL(45초)까지 유령 점유가 남는다.
 export const releaseSeats = (screeningId, seatNos, rid) =>
   api('/api/seats/release', { method: 'POST', body: { screeningId, seatNos, requestId: rid } });
+// 자리를 내놓는 경로가 둘이다. leave 는 active·waiting 을 모두 처리해 기능만 보면 하나로도
+//   되지만, 그러면 회수 사유가 전부 LEAVE 로 찍혀 "줄 서다 포기"와 "입장했다가 반환"이 섞인다.
+//   관측에서 이 둘을 갈라 보려고 입장 상태면 complete 를 부른다.
 export const leaveQueue = (movieId, rid) =>
   api('/api/admission/leave', { method: 'POST', body: { movieId, requestId: rid } });
+export const completeSession = (movieId, rid) =>
+  api('/api/admission/complete', { method: 'POST', body: { movieId, requestId: rid } });
+export const releaseSlot = (movieId, rid, wasActive) =>
+  (wasActive ? completeSession : leaveQueue)(movieId, rid);
 
 // ================= 포맷 =================
 export function fmtEta(sec) {
@@ -137,8 +152,16 @@ export const lobbyFakes = () => S.fakes.filter(f => f.state === 'lobby');
 // 값이 localStorage라 브라우저마다 독립이다.
 export const openAtMs = () => { const v = parseInt(store.get(K.OPEN_AT) || '0'); return v > 0 ? v : 0; };
 export const openRushN = () => Math.min(MAX_FAKES, parseInt(store.get(K.OPEN_N) || '0'));
-export const openFiredAt = () => store.get(K.OPEN_FIRED);
+export const openFiredAt = () => store.get(K.OPEN_FIRED) || '';   // 없으면 빈 문자열 — 호출부가 문자열 연산을 한다
 export const markOpenFired = (at) => store.set(K.OPEN_FIRED, at);
+
+// 이 탭의 신원. 같은 브라우저의 두 탭이 같은 예약을 각자 발동하는 것을 막는 데 쓴다.
+export const TAB_ID = uuid().slice(0, 8);
+// 발동 클레임 — localStorage에는 원자적 비교·교환이 없어 "마지막에 쓴 쪽이 가져간다"로 정한다.
+//   각 탭이 자기 표식을 쓰고 잠깐 뒤 다시 읽어, 그대로면 자기가 마지막이므로 진행한다.
+//   덮인 탭은 물러선다. 두 탭이 동시에 러시를 쏘면 예약 인원이 두 배로 나간다.
+export const claimOpenFire = (at) => store.set(K.OPEN_FIRED, `${at}#${TAB_ID}`);
+export const wonOpenFire = (at) => store.get(K.OPEN_FIRED) === `${at}#${TAB_ID}`;
 export const clearOpen = () => store.del(K.OPEN_AT, K.OPEN_N, K.OPEN_FIRED);
 export const isRushFresh = () => Date.now() - openAtMs() < RUSH_FRESH_MS;
 

@@ -28,15 +28,17 @@ $('botMode').onchange = () => feedLog(
     ? '자동 예매 켜짐 — 입장한 관객이 예매하고 자리를 반환합니다'
     : '자동 예매 꺼짐 — 입장한 관객이 세션이 끝날 때까지 자리를 차지합니다', 'sys');
 
-// 소개는 첫 방문에 펼쳐 보여준다(스토리·아키텍처·저장소 링크가 여기 있다). 접은 선택은 기억한다.
+// 소개는 접은 채로 시작한다. 펼쳐 두면 인용구·아키텍처·주의문이 첫 화면을 차지해
+//   실제로 만질 것(예매 카드와 콘솔)이 스크롤 아래로 밀린다. 무엇인지는 부제 한 줄이 말하고,
+//   더 볼 사람만 연다. 편 선택은 기억한다.
 const introToggle = $('introToggle');
 const setIntro = (open) => {
   $('introPanel').classList.toggle('hidden', !open);
   introToggle.setAttribute('aria-expanded', String(open));
   introToggle.textContent = open ? '이 시뮬레이터는? ▴' : '이 시뮬레이터는? ▾';
-  store.set(K.INTRO_CLOSED, open ? '' : '1');
+  store.set(K.INTRO_OPEN, open ? '1' : '');
 };
-setIntro(!store.get(K.INTRO_CLOSED));
+setIntro(!!store.get(K.INTRO_OPEN));
 introToggle.onclick = () => setIntro($('introPanel').classList.contains('hidden'));
 
 // ================= 시계 =================

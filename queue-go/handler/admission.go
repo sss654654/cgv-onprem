@@ -44,13 +44,24 @@ const publishTimeout = 6 * time.Second
 type Admission struct {
 	rdb         *redis.Client
 	maxSessions int64
-	publisher   AdmissionPublisher
-	rate        *metrics.RateProvider
-	adminToken  string
+	// sessionSec = active 세션 수명(초). stats 응답으로 내보낸다 —
+	//   화면의 잔여 시간 카운트다운이 이 값을 기준으로 그려야 실제 회수 시점과 어긋나지 않는다.
+	//   프런트에 같은 값을 상수로 두면 env를 바꿨을 때 화면만 옛 값으로 남는다.
+	sessionSec int64
+	publisher  AdmissionPublisher
+	rate       *metrics.RateProvider
+	adminToken string
 }
 
-func NewAdmission(rdb *redis.Client, maxSessions int64, publisher AdmissionPublisher, rate *metrics.RateProvider, adminToken string) *Admission {
-	return &Admission{rdb: rdb, maxSessions: maxSessions, publisher: publisher, rate: rate, adminToken: adminToken}
+func NewAdmission(rdb *redis.Client, maxSessions int64, sessionTimeout time.Duration, publisher AdmissionPublisher, rate *metrics.RateProvider, adminToken string) *Admission {
+	return &Admission{
+		rdb:         rdb,
+		maxSessions: maxSessions,
+		sessionSec:  int64(sessionTimeout / time.Second),
+		publisher:   publisher,
+		rate:        rate,
+		adminToken:  adminToken,
+	}
 }
 
 func (a *Admission) Register(r *gin.Engine) {
@@ -241,11 +252,12 @@ func (a *Admission) stats(c *gin.Context) {
 		etaNext = a.rate.ETASeconds(c.Request.Context(), movieID, waiting+1)
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"active":         active,
-		"waiting":        waiting,
-		"promotedTotal":  promoted,
-		"capacity":       a.maxSessions,
-		"etaNextSeconds": etaNext,
+		"active":                active,
+		"waiting":               waiting,
+		"promotedTotal":         promoted,
+		"capacity":              a.maxSessions,
+		"etaNextSeconds":        etaNext,
+		"sessionTimeoutSeconds": a.sessionSec,
 	})
 }
 

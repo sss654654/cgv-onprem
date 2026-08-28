@@ -3,7 +3,7 @@
 
 import {
   S, K, store, $, show, onScreen, toast, api, uuid, sleep, esc,
-  PRICE, SESSION_SEC, fmtEta, feedLog, effectiveGate, releaseSeats, leaveQueue, clearOpen,
+  PRICE, sessionSecs, fmtEta, feedLog, effectiveGate, releaseSeats, releaseSlot, clearOpen,
 } from './core.js';
 import { pollStats, pollEvents } from './live.js';
 
@@ -37,7 +37,8 @@ export function login() {
 // 진행 흐름 밖(movieId 없음)이면 자연히 아무것도 하지 않는다.
 async function releaseAndLeave() {
   if (S.mine.size && S.screeningId && S.rid) await releaseSeats(S.screeningId, [...S.mine], S.rid);
-  if (S.rid && S.movieId) await leaveQueue(S.movieId, S.rid);
+  // 입장 상태였으면 complete, 줄에서 나가는 것이면 leave — 회수 사유를 갈라서 남긴다.
+  if (S.rid && S.movieId) await releaseSlot(S.movieId, S.rid, S.active);
 }
 
 export async function logout() {
@@ -204,7 +205,7 @@ document.addEventListener('visibilitychange', () => {
 // ================= 세션 카운트다운 =================
 function startActiveTimer() {
   // 새로고침 복구면 저장된 만료 시각을 이어받는다 — 초기화된 60초를 보여주다 서버 회수를 맞지 않게.
-  S.activeUntil = (S.resumeUntil && S.resumeUntil > Date.now()) ? S.resumeUntil : Date.now() + SESSION_SEC * 1000;
+  S.activeUntil = (S.resumeUntil && S.resumeUntil > Date.now()) ? S.resumeUntil : Date.now() + sessionSecs() * 1000;
   S.resumeUntil = 0;
   const flow = store.getJSON(K.FLOW);
   if (flow) { flow.activeUntil = S.activeUntil; store.setJSON(K.FLOW, flow); }

@@ -140,7 +140,7 @@ func main() {
 	// 8) 라우트 — 헬스 + 대기열(enter·position·leave·complete).
 	health := handler.NewHealth(rdb)
 	health.Register(r)
-	handler.NewAdmission(rdb, cfg.MaxSessions, kp, rate, cfg.AdminToken).Register(r)
+	handler.NewAdmission(rdb, cfg.MaxSessions, cfg.SessionTimeout, kp, rate, cfg.AdminToken).Register(r)
 
 	// 9) HTTP 서버 — r.Run() 대신 http.Server: graceful drain(Shutdown)을 쓰기 위한 교체
 	//    + gin 기본은 타임아웃 무제한이라 명시(판정 ⑤ — 폴링=짧은 요청 전제를 서버가 강제).

@@ -5,7 +5,7 @@
 // 화면에서 사라지는데, 그때도 계속 부르면 대기 중인 사용자 한 명이 안 보는 데이터를
 // 3초마다 두 번씩 받아 간다. 대기 인원이 많을수록 그 몫이 그대로 곱해진다.
 
-import { S, $, api, fmtEta, feedLog, effectiveGate, onScreen } from './core.js';
+import { S, $, api, fmtEta, feedLog, effectiveGate, onScreen, setSessionSec } from './core.js';
 
 const POLL_MS = 3000;
 const STALE_AFTER = 3;   // 연속 실패가 이만큼 쌓이면 화면 값이 낡았다고 표시한다
@@ -42,6 +42,9 @@ export async function pollStats() {
   }
   fails = 0;
   if (bar) bar.classList.remove('stale');
+  // 세션 수명은 서버가 정한다. 화면 카운트다운이 쓰도록 매 폴링에서 받아 둔다 —
+  //   프런트에 상수로 두면 서버 env를 바꿨을 때 표시만 옛 값으로 남는다.
+  setSessionSec(data.sessionTimeoutSeconds);
 
   // 정원(capacity)은 화면에 내보내지 않는다 — 실서비스가 정원을 광고하지 않는 것과 같게.
   // "바로 입장" 판정에만 쓴다. 게이트 상태가 우선한다(오픈 전·마감에는 입장 자체가 안 된다).

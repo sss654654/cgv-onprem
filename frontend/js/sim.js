@@ -4,18 +4,24 @@
 // 폴링이 곧 생존 신호라, 틱이 멈추면 대기 중인 관객은 30초 만에 서버가 회수한다.
 
 import {
-  S, K, store, $, toast, api, uuid, feedLog, fmtAt, fmtHMS,
+  S, K, store, $, toast, api, uuid, feedLog, fmtAt, fmtHMS, sessionSecs,
   MAX_FAKES, INJECT_PRESETS, RUSH_PRESETS,
   effectiveGate, openAtMs, openRushN, openFiredAt, markOpenFired, clearOpen, isRushFresh,
-  activeFakes, lobbyFakes, releaseSeats, leaveQueue, takeRoster, onScreen,
+  claimOpenFire, wonOpenFire,
+  activeFakes, lobbyFakes, releaseSeats, leaveQueue, releaseSlot, takeRoster, onScreen,
 } from './core.js';
 import { goHome } from './booking.js';
 
-const CHUNK = 6;        // 동일 오리진 동시연결 한도 안에서의 병렬 폭
+const CHUNK = 6;        // 생존 폴링의 병렬 폭. HTTP/1.1 동일 오리진 동시연결 한도에 맞춘 값
 const TICK_MS = 3000;   // 가상 관객 폴링 주기
+// 자동 예매의 병렬 폭은 따로 둔다. 예매 한 건이 네 번 순차 왕복(회차→좌석→선점→확정)이라
+//   왕복 시간이 그대로 곱해지는데, 공개 경로는 엣지를 거쳐 왕복이 LAN보다 길다.
+//   같은 폭으로는 세션 수명(60초) 안에 러시 인원을 다 처리하지 못해 남은 인원이 한꺼번에 만료된다.
+//   공개 경로는 HTTP/2라 한 연결에서 여러 요청이 겹치므로 6을 넘겨도 연결이 늘지 않는다.
+const BOOK_CHUNK = 12;
 // 한 틱에서 자동 예매에 쓸 수 있는 시간. 나머지는 생존 폴링 몫으로 남긴다 —
 //   폴링이 끊기면 서버가 대기자를 회수하므로, 예매보다 폴링이 먼저다.
-const BOOK_BUDGET_MS = 1200;
+const BOOK_BUDGET_MS = 1800;
 
 // ================= 스트립 =================
 const DOT_CLASS = { lobby: 'd-lobby', waiting: 'd-wait', admitted: 'd-in', booked: 'd-book', gone: 'd-gone' };
@@ -27,8 +33,20 @@ const DOT_NAME = {
   gone: '빈손 퇴장 — 아무것도 사지 못하고 나갔습니다',
 };
 
+// 끝난 관객(예매 성공·빈손 퇴장)은 스트립에 흔적으로 남긴다 — 한 판이 어떻게 끝났는지가
+//   그 점들이다. 다만 무한히 쌓이면 매 틱 도는 필터가 커지고 점이 수천 개가 되어 판이 안 읽힌다.
+//   최근 것부터 이만큼만 남기고 오래된 흔적을 걷어낸다.
+const KEEP_DONE = 200;
+function pruneDone() {
+  const done = S.fakes.filter(f => f.state === 'booked' || f.state === 'gone');
+  if (done.length <= KEEP_DONE) return;
+  const drop = new Set(done.slice(0, done.length - KEEP_DONE));
+  S.fakes = S.fakes.filter(f => !drop.has(f));
+}
+
 export function renderStrip() {
   const box = $('queueStrip'); if (!box) return;
+  pruneDone();
   box.innerHTML = S.fakes.length
     ? S.fakes.map(f => `<i class="d ${DOT_CLASS[f.state]}" title="관객-${f.label} · ${DOT_NAME[f.state]}"></i>`).join('')
     : '<span class="qv-empty">아직 가상 관객이 없습니다 — 위에서 넣어보세요</span>';
@@ -146,14 +164,22 @@ export async function botTick() {
   try {
     // ① 생존 폴링 — 순차로 돌면 관객 수 × 왕복 시간이 생존 창을 넘는다
     const live = S.fakes.filter(f => f.entered && f.state !== 'booked' && f.state !== 'gone');
+    // 만료는 한 명씩 흩어져 오지 않는다. 함께 입장한 무리는 세션 수명이 같은 시각에 끝나
+    //   서버가 한 번에 회수하고, 그 결과가 이 틱에서 한꺼번에 관찰된다.
+    //   한 줄씩 찍으면 실황이 수십 줄의 퇴장으로 덮여 무언가 무너진 것처럼 보인다 — 한 줄로 묶는다.
+    const expired = [];
     for (let i = 0; i < live.length && gen === S.simGen; i += CHUNK) {
       await Promise.all(live.slice(i, i + CHUNK).map(async f => {
         const p = await api(`/api/admission/position?movieId=${encodeURIComponent(S.simMovieId)}&requestId=${encodeURIComponent(f.rid)}`);
         if (gen !== S.simGen || !p.ok || !p.data) return;
-        if (p.data.status === 'EXPIRED') { f.state = 'gone'; feedLog(`관객-${f.label} 퇴장 — 세션 만료·이탈`, 'gone'); return; }
+        if (p.data.status === 'EXPIRED') { f.state = 'gone'; expired.push(f.label); return; }
         if (p.data.status !== 'ADMITTED') return;   // 대기 상태면 도장만 찍고 줄을 유지한다
         if (f.state === 'waiting') { f.state = 'admitted'; feedLog(`관객-${f.label} 승격 → 입장`, 'in'); }
       }));
+    }
+    if (expired.length === 1) feedLog(`관객-${expired[0]} 퇴장 — 세션 만료`, 'gone');
+    else if (expired.length > 1) {
+      feedLog(`관객 ${expired.length}명 동시 퇴장 — 입장 후 ${sessionSecs()}초 안에 예매하지 못해 자리가 회수됐습니다`, 'gone');
     }
 
     // ② 자동 예매 여정.
@@ -165,9 +191,9 @@ export async function botTick() {
     const bookDeadline = Date.now() + BOOK_BUDGET_MS;
     if (canBook) {
       const ready = S.fakes.filter(f => f.state === 'admitted');
-      for (let i = 0; i < ready.length && gen === S.simGen; i += CHUNK) {
+      for (let i = 0; i < ready.length && gen === S.simGen; i += BOOK_CHUNK) {
         if (Date.now() > bookDeadline) break;   // 예산을 넘기면 여기서 끊고 ①을 지킨다
-        await Promise.all(ready.slice(i, i + CHUNK).map(async f => {
+        await Promise.all(ready.slice(i, i + BOOK_CHUNK).map(async f => {
         if (gen !== S.simGen) return;
         if (f.state !== 'admitted') return;
 
@@ -190,7 +216,7 @@ export async function botTick() {
         } else {
           // 실패하면 잡은 좌석과 자리를 돌려주고 끝낸다. 안 그러면 만료까지 점유가 남는다.
           await releaseSeats(avail.screeningId, [free.seatNo], f.rid);
-          await leaveQueue(S.simMovieId, f.rid);
+          await releaseSlot(S.simMovieId, f.rid, true);   // 입장 상태에서 반환이라 complete
           f.state = 'gone';
           feedLog(`관객-${f.label} 예매 실패 → 퇴장`, 'gone');
         }
@@ -209,7 +235,9 @@ export async function clearFakes() {
   const total = S.fakes.length;
   for (const f of S.fakes) {
     if (f.state === 'lobby') { live++; continue; }   // 서버에 없던 관객이라 목록에서 빼면 끝이다
-    if (f.entered && (f.state === 'waiting' || f.state === 'admitted')) { live++; leaveQueue(S.simMovieId, f.rid); }
+    if (f.entered && (f.state === 'waiting' || f.state === 'admitted')) {
+      live++; releaseSlot(S.simMovieId, f.rid, f.state === 'admitted');
+    }
   }
   S.fakes = [];
   clearInterval(S.simTimer); S.simTimer = null;
@@ -271,6 +299,9 @@ export function renderGate() {
     box.classList.add('live');
     subText = `● 예매 진행 중 · 마감까지 ${fmtHMS(st.remain)}`;
   } else if (st.s === 'closed') subText = '오픈 마감됨';
+  // 예약이 없는 상태에도 문구를 준다. 비워 두면 [지금 열기]로 게이트를 푼 순간 —
+  //   대기를 건너뛰려는 사람이 가장 확인을 원하는 그때 — 표시가 사라져 뭔가 꺼진 것처럼 보인다.
+  else subText = '● 상시 예매 가능 — 오픈 예약 없음';
   if (sub) sub.textContent = subText;
 }
 
@@ -282,23 +313,30 @@ export function fireGateEvents() {
   if (!at) return;
   const fired = openFiredAt();
 
-  if (st.s === 'open' && fired !== String(at)) {
-    markOpenFired(at);
-    feedLog('예매가 열렸습니다 — 입장 시작', 'sys');
-    toast('예매가 열렸습니다');
-    const rush = openRushN();
-    const lobbyN = lobbyFakes().length;
-    const fresh = isRushFresh();   // 오픈 한참 뒤에 발견한 예약은 투입을 생략한다
-    histPush(at, fresh ? rush + lobbyN : 0);   // 기록은 실제 발동 기준이다
-    if (fresh && (rush > 0 || lobbyN > 0)) {
-      feedLog(`오픈 — 대기실 ${lobbyN}명과 러시 ${rush}명이 동시에 줄을 섭니다`, 'sys');
-      // 즉시 투입이 돌고 있으면 잠시 물러섰다 다시 시도한다 — 러시가 조용히 사라지지 않게.
-      const tryRush = (left) => {
-        if (!addFakes._busy) releaseLobby(rush);
-        else if (left > 0) setTimeout(() => tryRush(left - 1), 2000);
-      };
-      tryRush(5);
-    }
+  if (st.s === 'open' && fired !== String(at) && !fired.startsWith(`${at}#`)) {
+    // 두 탭이 같은 초에 여기 닿을 수 있다. 각자 표식을 쓰고 잠깐 뒤 다시 읽어,
+    //   자기 것이 남아 있는 탭만 진행한다. 덮인 탭은 조용히 물러선다.
+    claimOpenFire(at);
+    setTimeout(() => {
+      if (!wonOpenFire(at)) return;              // 다른 탭이 가져갔다
+      if (effectiveGate().s !== 'open') return;  // 대기 사이에 상태가 바뀌었다
+      markOpenFired(at);
+      feedLog('예매가 열렸습니다 — 입장 시작', 'sys');
+      toast('예매가 열렸습니다');
+      const rush = openRushN();
+      const lobbyN = lobbyFakes().length;
+      const fresh = isRushFresh();   // 오픈 한참 뒤에 발견한 예약은 투입을 생략한다
+      histPush(at, fresh ? rush + lobbyN : 0);   // 기록은 실제 발동 기준이다
+      if (fresh && (rush > 0 || lobbyN > 0)) {
+        feedLog(`오픈 — 대기실 ${lobbyN}명과 러시 ${rush}명이 동시에 줄을 섭니다`, 'sys');
+        // 즉시 투입이 돌고 있으면 잠시 물러섰다 다시 시도한다 — 러시가 조용히 사라지지 않게.
+        const tryRush = (left) => {
+          if (!addFakes._busy) releaseLobby(rush);
+          else if (left > 0) setTimeout(() => tryRush(left - 1), 2000);
+        };
+        tryRush(5);
+      }
+    }, 150);
     return;
   }
 
@@ -380,9 +418,14 @@ export function initConsole() {
 
   $('openClear').onclick = () => {
     if (!openAtMs()) return;   // 예약이 없으면 할 일이 없다 — 실황에 해제 로그가 도배되지 않게
+    // 대기실 인원도 함께 비운다. 예약은 localStorage에 있고 대기실은 이 모듈의 배열에만 있어서,
+    //   예약만 지우면 다음 예약이 발동할 때 그 인원이 새 러시에 합류한다("해제했는데 또 나온다").
+    //   대기실 관객은 서버에 넣은 적이 없으므로 목록에서 빼면 끝이다.
+    const lobbyN = lobbyFakes().length;
+    if (lobbyN) S.fakes = S.fakes.filter(f => f.state !== 'lobby');
     clearOpen();
-    feedLog('오픈 예약을 해제했습니다', 'sys');
-    renderGate();
+    feedLog(`오픈 예약을 해제했습니다${lobbyN ? ` — 대기실 ${lobbyN}명도 함께 비웠습니다` : ''}`, 'sys');
+    renderStrip(); renderGate();
   };
 
   const body = $('conBody');
