@@ -103,8 +103,12 @@
             <div class="id-hint hidden" id="idHint">지금 <button class="linklike" id="idHintBtn">익명으로 시작</button>하면
                가입 없이 바로 예매를 체험할 수 있습니다.</div>
 
-            <div class="stats-bar" id="statsBar"></div>
             <a class="btn ghost small con-jump" href="#simConsole">시뮬레이터 콘솔로 이동 ↓</a>
+
+            <div class="board" id="seatBoard" hidden>
+              <div class="board-head">좌석 현황 <span class="board-sub">회차별 잔여 / 전체</span></div>
+              <div class="board-grid" id="boardGrid"></div>
+            </div>
           </section>
 
           <h2 class="list-title">지금 예매</h2>
@@ -157,10 +161,7 @@
             <div class="con-group">
               <div class="con-sec">내 가상 관객 · 활성 <b id="qvCount" class="num">0</b>명</div>
               <div id="queueStrip" class="qv-strip"></div>
-              <div class="qv-legend">
-                <span class="lg-grp">진행 중 <span id="lgLobby" class="hidden"><i class="d d-lobby"></i>대기실 </span><i class="d d-wait"></i>대기 <i class="d d-in"></i>입장</span>
-                <span class="lg-grp">끝남 <i class="d d-book"></i>예매 성공 <i class="d d-gone"></i>빈손 퇴장</span>
-              </div>
+              <div class="qv-legend" id="qvLegend"></div>
             </div>
             <div class="con-group">
               <div class="con-sec">실황</div>

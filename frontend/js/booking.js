@@ -3,9 +3,9 @@
 
 import {
   S, K, store, $, show, onScreen, toast, api, uuid, sleep, esc,
-  PRICE, sessionSecs, fmtEta, feedLog, effectiveGate, releaseSeats, releaseSlot, clearOpen,
+  PRICE, sessionSecs, fmtEta, feedLog, effectiveGate, releaseSeats, releaseSlot,
 } from './core.js';
-import { pollStats, pollEvents } from './live.js';
+import { loadServerConfig, pollBoard, pollEvents } from './live.js';
 
 // ================= 신원 =================
 // requestId는 시작할 때 발급하고 로그아웃 때 회수한다. 신원이 없으면 예매에 들어갈 수 없다.
@@ -71,7 +71,8 @@ export async function loadMovies() {
     return;
   }
   S.simMovieId = data[0].id;     // 시뮬레이터가 쓸 영화
-  pollStats(); pollEvents();     // 3초 주기를 기다리지 않고 즉시 — 첫 화면부터 현황·실황이 찬다
+  loadServerConfig();            // 세션 수명 — 배포 때만 바뀌므로 한 번만 읽는다
+  pollBoard(); pollEvents();     // 3초 주기를 기다리지 않고 즉시 — 첫 화면부터 현황판·실황이 찬다
 
   data.forEach(m => {
     const time = m.broadcastAt ? String(m.broadcastAt).replace('T', ' ').slice(0, 16) : '';
@@ -82,18 +83,11 @@ export async function loadMovies() {
         '<div class="eb-art"><b>KBO</b><i>ALL-STAR</i><em>2 0 2 6</em></div></div>' +
       '<div class="eb-info"><span class="badge">단독 생중계</span>' +
         `<h3>${esc(m.title)}</h3><div class="time">${esc(time)} 방송</div>` +
-        '<div class="eb-actions"><button class="btn primary big go">예매하기 →</button>' +
-        '<button class="btn small ghost gate-skip hidden" type="button">지금 열기</button></div></div>';
+        '<div class="eb-actions"><button class="btn primary big go">예매하기 →</button></div></div>';
 
     card.querySelector('.go').onclick = () => {
       if (!S.rid) { toast('우측 상단 [익명으로 시작]을 눌러 신원을 만든 뒤 이용해주세요.', true); return; }
       enter(m.id, m.title);
-    };
-    // 오픈 대기 중에도 지금 바로 체험할 수 있는 탈출구. 예약을 해제하면 게이트가 사라진다.
-    card.querySelector('.gate-skip').onclick = () => {
-      clearOpen();   // 콘솔의 "해제" 버튼과 같은 헬퍼 — 게이트 키가 늘어도 한 곳만 고치면 된다
-      feedLog('오픈 예약을 해제하고 지금 열었습니다', 'sys');
-      document.dispatchEvent(new CustomEvent('gate:changed'));
     };
     list.appendChild(card);
   });

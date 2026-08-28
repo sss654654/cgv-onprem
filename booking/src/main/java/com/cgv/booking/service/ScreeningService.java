@@ -39,6 +39,19 @@ public class ScreeningService {
         if (!admitted.isAdmitted(movieId, requestId)) {
             throw ApiException.forbidden("입장객이 아닙니다(미승인). 대기열을 거쳐 입장하세요.");
         }
+        return compute(movieId);
+    }
+
+    // 좌석 현황판 — 입장 전에도 보이는 집계. 게이트가 없다.
+    // 좌석 번호나 누가 잡았는지는 내보내지 않고 회차별 총/잔여 수만 준다. 실제 예매는 여전히
+    //   게이트 뒤에서만 되고, 이 숫자는 매표소 앞 전광판처럼 밖에서 보라고 있는 값이다.
+    // 오픈 전 화면에서 방문자가 볼 것이 "대기 0 · 오픈 전"뿐이라 움직이는 값이 없었다 —
+    //   그 자리에 이 숫자를 놓으면 러시가 좌석을 깎는 것이 밖에서도 보인다.
+    public List<ScreeningView> board(String movieId) {
+        return compute(movieId);
+    }
+
+    private List<ScreeningView> compute(String movieId) {
         List<Screening> list = screenings.findByMovieIdOrderByBranchAscScreenNoAsc(movieId);
         if (list.isEmpty()) return List.of();
 

@@ -17,4 +17,11 @@ public class ScreeningController {
                                                      @RequestParam String requestId) {
         return service.listForMovie(movieId, requestId);   // 미입장이면 403(게이트)
     }
+
+    // 좌석 현황판 — 입장 전에도 부를 수 있다(게이트 없음). 회차별 총/잔여 수만 나가고
+    //   좌석 번호나 점유 주체는 담기지 않는다. 예매는 여전히 위의 게이트 뒤에서만 된다.
+    @GetMapping("/board")
+    public List<ScreeningService.ScreeningView> board(@RequestParam String movieId) {
+        return service.board(movieId);
+    }
 }

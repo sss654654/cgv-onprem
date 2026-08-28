@@ -12,13 +12,16 @@ import {
 } from './core.js';
 import { goHome } from './booking.js';
 
-const CHUNK = 6;        // 생존 폴링의 병렬 폭. HTTP/1.1 동일 오리진 동시연결 한도에 맞춘 값
+// 병렬 폭. 6은 HTTP/1.1의 "동일 오리진 동시연결 6개" 전제에서 나온 값인데,
+//   공개 경로는 HTTP/2라 연결 하나에서 요청이 겹친다 — 6으로 묶을 이유가 없다.
+// 이 폭이 좁으면 왕복 시간이 그대로 곱해진다. 실측(2026-08-28): 같은 API가
+//   LAN 직결 약 0.037초, 공개 경로 약 0.85초(Cloudflare 거점이 LAX로 잡힌다).
+//   50명을 6명씩 훑으면 폴링만 9회 × 0.85초 ≈ 7.6초로 틱(3초)을 넘겨,
+//   자동 예매에 쓸 시간이 남지 않아 세션 수명(60초) 안에 무리를 못 비운다.
+const CHUNK = 24;       // 생존 폴링
 const TICK_MS = 3000;   // 가상 관객 폴링 주기
-// 자동 예매의 병렬 폭은 따로 둔다. 예매 한 건이 네 번 순차 왕복(회차→좌석→선점→확정)이라
-//   왕복 시간이 그대로 곱해지는데, 공개 경로는 엣지를 거쳐 왕복이 LAN보다 길다.
-//   같은 폭으로는 세션 수명(60초) 안에 러시 인원을 다 처리하지 못해 남은 인원이 한꺼번에 만료된다.
-//   공개 경로는 HTTP/2라 한 연결에서 여러 요청이 겹치므로 6을 넘겨도 연결이 늘지 않는다.
-const BOOK_CHUNK = 12;
+// 예매는 한 건이 네 번 순차 왕복(회차→좌석→선점→확정)이라 폭을 더 준다.
+const BOOK_CHUNK = 24;
 // 한 틱에서 자동 예매에 쓸 수 있는 시간. 나머지는 생존 폴링 몫으로 남긴다 —
 //   폴링이 끊기면 서버가 대기자를 회수하므로, 예매보다 폴링이 먼저다.
 const BOOK_BUDGET_MS = 1800;
@@ -44,6 +47,19 @@ function pruneDone() {
   S.fakes = S.fakes.filter(f => !drop.has(f));
 }
 
+// 범례는 지금 화면에 있는 상태만 싣는다. 다섯 개를 늘 펼쳐 두면 관객이 없을 때도
+//   설명만 남고, 대기실처럼 오픈 예약이 걸렸을 때만 생기는 상태까지 상시 노출된다.
+const LEGEND = [
+  ['lobby', '대기실'], ['waiting', '대기'], ['admitted', '입장'],
+  ['booked', '예매 성공'], ['gone', '빈손 퇴장'],
+];
+function renderLegend() {
+  const el = $('qvLegend'); if (!el) return;
+  const have = new Set(S.fakes.map(f => f.state));
+  el.innerHTML = LEGEND.filter(([s]) => have.has(s))
+    .map(([s, name]) => `<span class="lg-grp"><i class="d ${DOT_CLASS[s]}"></i>${name}</span>`).join('');
+}
+
 export function renderStrip() {
   const box = $('queueStrip'); if (!box) return;
   pruneDone();
@@ -51,6 +67,7 @@ export function renderStrip() {
     ? S.fakes.map(f => `<i class="d ${DOT_CLASS[f.state]}" title="관객-${f.label} · ${DOT_NAME[f.state]}"></i>`).join('')
     : '<span class="qv-empty">아직 가상 관객이 없습니다 — 위에서 넣어보세요</span>';
   $('qvCount').textContent = activeFakes().length;
+  renderLegend();
 }
 
 // ================= 관객 생성·투입 =================
@@ -261,11 +278,6 @@ export function renderGate() {
     else if (st.s === 'closed') { el.classList.add('closed'); el.textContent = '예매 마감'; el.disabled = true; }
     else { el.textContent = '예매하기 →'; el.disabled = false; }
   });
-  // 오픈을 기다리지 않고 지금 체험하려는 방문자를 위해 해제 버튼을 잠긴 버튼 옆에 함께 보인다.
-  document.querySelectorAll('.gate-skip').forEach(el => el.classList.toggle('hidden', st.s !== 'before'));
-  // 대기실은 오픈 예약이 걸렸을 때만 생기는 상태다 — 그 전에는 범례에서도 뺀다.
-  const lgLobby = $('lgLobby');
-  if (lgLobby) lgLobby.classList.toggle('hidden', st.s !== 'before' && !lobbyFakes().length);
 
   // 콘솔의 예약 줄은 예약 "내용"만 말한다. 진행 상태와 카운트다운은 시계 블록이 단일 출처다.
   const note = $('openNote');
@@ -349,11 +361,17 @@ export function fireGateEvents() {
 }
 
 // ================= 오픈 슬롯·기록 =================
+// "지금 +N분"은 누르는 순간을 기준으로 계산해야 한다. 목록을 채운 시각으로 굳혀 두면
+//   화면을 열어 두었다가 나중에 적용할 때 그만큼 짧아지고, 해제 후 다시 걸면 옛 시각이
+//   그대로 다시 잡혀 "3분을 걸었는데 2분에서 시작"하는 모양이 된다.
+//   값에 상대 분(rel)을 담고, 적용 시점에 그 분을 다시 더한다.
+const REL_SLOTS = [
+  { label: '지금 +1분 (데모)', rel: 1 },
+  { label: '지금 +3분 (데모)', rel: 3 },
+];
+
 function slotOptions() {
-  const out = [
-    { label: '지금 +1분 (데모)', ms: Date.now() + 60000 },
-    { label: '지금 +3분 (데모)', ms: Date.now() + 180000 },
-  ];
+  const out = REL_SLOTS.map(r => ({ label: r.label, ms: Date.now() + r.rel * 60000, rel: r.rel }));
   const d = new Date();
   d.setSeconds(0, 0);
   d.setMinutes(d.getMinutes() < 30 ? 30 : 60);
@@ -367,8 +385,16 @@ function slotOptions() {
 function fillSlots() {
   const sel = $('openSlot'); if (!sel) return;
   const cur = sel.value;
-  sel.innerHTML = slotOptions().map(o => `<option value="${o.ms}">${o.label}</option>`).join('');
+  // 상대 슬롯은 값에 "+N" 을 담는다 — 절대 시각으로 굳히지 않는다.
+  sel.innerHTML = slotOptions()
+    .map(o => `<option value="${o.rel ? `+${o.rel}` : o.ms}">${o.label}</option>`).join('');
   if ([...sel.options].some(op => op.value === cur)) sel.value = cur;
+}
+
+// 선택값을 실제 시각으로 바꾼다. 상대 슬롯이면 지금 기준으로 다시 계산한다.
+function slotToMs(v) {
+  if (typeof v === 'string' && v.startsWith('+')) return Date.now() + parseInt(v.slice(1)) * 60000;
+  return parseInt(v) || 0;
 }
 
 function histPush(at, n) {
@@ -406,7 +432,7 @@ export function initConsole() {
   }
 
   $('openSet').onclick = () => {
-    const at = parseInt(sel.value) || 0;
+    const at = slotToMs(sel.value);
     if (at <= Date.now()) { toast('지난 시각입니다 — 슬롯을 다시 선택하세요.', true); fillSlots(); return; }
     const n = Math.max(0, Math.min(MAX_FAKES, parseInt(openN.value) || 0));
     store.set(K.OPEN_AT, String(at));

@@ -5,16 +5,11 @@
 // 화면에서 사라지는데, 그때도 계속 부르면 대기 중인 사용자 한 명이 안 보는 데이터를
 // 3초마다 두 번씩 받아 간다. 대기 인원이 많을수록 그 몫이 그대로 곱해진다.
 
-import { S, $, api, fmtEta, feedLog, effectiveGate, onScreen, setSessionSec } from './core.js';
+import { S, $, api, feedLog, onScreen, setSessionSec } from './core.js';
 
 const POLL_MS = 3000;
 const STALE_AFTER = 3;   // 연속 실패가 이만큼 쌓이면 화면 값이 낡았다고 표시한다
 
-let fails = 0;
-let prevVals = [];
-
-// 전체 현황 타일은 screen-movies 안에 있다 — 다른 화면에서는 그릴 자리가 없다.
-const statsVisible = () => onScreen('movies');
 // 실황 피드는 시뮬레이터 콘솔 안에 있다 — 접으면 보이지 않는다.
 // 콘솔은 screen-movies 안에 있어 다른 화면으로 넘어가면 같이 가려지는데, show()가
 //   섹션에만 hidden을 걸고 conBody 자신의 클래스는 안 건드린다. 그래서 conBody만 보면
@@ -28,48 +23,49 @@ const feedVisible = () => {
   return !!body && !body.classList.contains('hidden');
 };
 
-// ================= 전체 현황 =================
-export async function pollStats() {
-  if (!S.simMovieId || !statsVisible()) return;
+// ================= 서버 설정 읽기 =================
+// 첫 화면에 있던 두 타일("전체 대기"·"입장까지 예상")을 뺐다. 오픈 전에는 줄이 서지 않아
+//   대기가 늘 0이고 예상도 "오픈 전"이라, 방문자가 처음 보는 자리에서 둘 다 고정값이었다.
+//   같은 숫자를 콘솔의 관객 스트립·실황이 움직이는 채로 보여준다.
+// 타일이 사라지면서 3초 폴링의 근거도 없어졌다. 남은 용도는 세션 수명 하나인데,
+//   그 값은 배포 때만 바뀌므로 화면을 열 때 한 번 읽으면 된다.
+export async function loadServerConfig() {
+  if (!S.simMovieId) return;
   const { ok, data } = await api(`/api/admission/stats?movieId=${encodeURIComponent(S.simMovieId)}`);
-  const bar = $('statsBar');
-  if (!ok || !data) {
-    // 직전 값을 유지한다 — 3초마다 지웠다 그리면 화면이 깜빡인다.
-    // 다만 연속 실패가 이어지면 흐리게 해 낡은 값임을 드러낸다.
-    fails += 1;
-    if (bar && fails >= STALE_AFTER) bar.classList.add('stale');
-    return;
-  }
-  fails = 0;
-  if (bar) bar.classList.remove('stale');
-  // 세션 수명은 서버가 정한다. 화면 카운트다운이 쓰도록 매 폴링에서 받아 둔다 —
-  //   프런트에 상수로 두면 서버 env를 바꿨을 때 표시만 옛 값으로 남는다.
+  if (!ok || !data) return;
+  // 세션 수명은 서버가 정한다. 프런트에 상수로 두면 env를 바꿨을 때 화면만 옛 값으로 남는다.
   setSessionSec(data.sessionTimeoutSeconds);
+}
 
-  // 정원(capacity)은 화면에 내보내지 않는다 — 실서비스가 정원을 광고하지 않는 것과 같게.
-  // "바로 입장" 판정에만 쓴다. 게이트 상태가 우선한다(오픈 전·마감에는 입장 자체가 안 된다).
-  const gs = effectiveGate().s;
-  const canEnterNow = data.active < data.capacity && data.waiting === 0 && (gs === 'none' || gs === 'open');
-  let eta;
-  if (gs === 'before') eta = '오픈 전';
-  else if (gs === 'closed') eta = '마감';
-  else eta = canEnterNow ? '바로 입장' : fmtEta(data.etaNextSeconds ?? -1);
-
-  // 이 타일은 서버가 아는 숫자만 싣는다. 대기실은 오픈 순간까지 이 브라우저가 들고 있는
-  // 시뮬레이터 상태라 서버 대기열과 섞으면 같은 자리에서 두 세계가 뒤섞인다 — 그쪽은 콘솔이 맡는다.
-  // 오픈 전 대기열이 0인 것은 정상이다: 줄은 오픈 순간에 선다.
-  const vals = [['전체 대기', data.waiting], ['입장까지 예상', eta]];
-  if (!bar) return;
-
-  bar.innerHTML = vals.map(([k, v]) => `<span class="stat"><em>${k}</em><b>${v}</b></span>`).join('');
-  // 값이 바뀐 타일에만 펄스 — 화면이 살아 있다는 신호
-  vals.forEach(([, v], i) => {
-    if (prevVals[i] !== undefined && prevVals[i] !== v) {
-      const b = bar.children[i] && bar.children[i].querySelector('b');
-      if (b) { b.classList.add('bump'); setTimeout(() => b.classList.remove('bump'), 500); }
+// ================= 좌석 현황판 =================
+// 입장 전에도 보이는 유일한 "움직이는 숫자"다. 예매 화면의 좌석 목록과 달리 게이트가 없고,
+//   좌석 번호 없이 회차별 잔여/전체만 받는다(/api/screenings/board).
+const boardVisible = () => onScreen('movies');
+let boardPrev = {};
+export async function pollBoard() {
+  if (!S.simMovieId || !boardVisible()) return;
+  const box = $('seatBoard'); if (!box) return;
+  const { ok, data } = await api(`/api/screenings/board?movieId=${encodeURIComponent(S.simMovieId)}`);
+  if (!ok || !Array.isArray(data) || !data.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const grid = $('boardGrid');
+  grid.innerHTML = data.map(s => {
+    const pct = s.total > 0 ? Math.round((s.total - s.remain) / s.total * 100) : 0;
+    // 잔여가 줄수록 눈에 띄게 — 매진 임박이 숫자를 읽기 전에 보이게 한다.
+    const tone = s.remain === 0 ? 'full' : pct >= 80 ? 'hot' : pct >= 40 ? 'warn' : '';
+    return `<div class="bd ${tone}" data-id="${s.screeningId}">
+      <span class="bd-name">${s.branch} ${s.screenNo}관</span>
+      <span class="bd-num"><b>${s.remain === 0 ? '매진' : s.remain}</b>${s.remain === 0 ? '' : ` / ${s.total}`}</span>
+    </div>`;
+  }).join('');
+  // 값이 바뀐 칸만 깜빡인다 — 러시가 좌석을 깎는 순간이 보이게.
+  data.forEach(s => {
+    if (boardPrev[s.screeningId] !== undefined && boardPrev[s.screeningId] !== s.remain) {
+      const el = grid.querySelector(`[data-id="${s.screeningId}"] b`);
+      if (el) { el.classList.add('bump'); setTimeout(() => el.classList.remove('bump'), 500); }
     }
+    boardPrev[s.screeningId] = s.remain;
   });
-  prevVals = vals.map(([, v]) => v);
 }
 
 // ================= 실황 =================
@@ -112,9 +108,9 @@ export async function pollEvents() {
 }
 
 export function startLivePolling() {
-  setInterval(pollStats, POLL_MS);
   setInterval(pollEvents, POLL_MS);
-  // 다시 보이게 된 순간에 한 번 당겨 온다 — 다음 틱까지 3초 동안 낡은 값이 남지 않게.
-  document.addEventListener('screen:changed', () => { if (statsVisible()) pollStats(); });
+  setInterval(pollBoard, POLL_MS);
   document.addEventListener('console:toggled', (e) => { if (e.detail) pollEvents(); });
+  // 다시 보이게 된 순간에 한 번 당겨 온다 — 다음 틱까지 낡은 값이 남지 않게.
+  document.addEventListener('screen:changed', () => { if (boardVisible()) pollBoard(); });
 }
