@@ -41,6 +41,19 @@ const setIntro = (open) => {
 setIntro(!!store.get(K.INTRO_OPEN));
 introToggle.onclick = () => setIntro($('introPanel').classList.contains('hidden'));
 
+// 좌석 현황 — 요약 한 줄은 늘 보이고 회차별 상세만 접는다. 같은 이유로 기본은 접힘이다.
+const boardToggle = $('boardToggle');
+if (boardToggle) {
+  const setBoard = (open) => {
+    $('boardGrid').classList.toggle('hidden', !open);
+    boardToggle.setAttribute('aria-expanded', String(open));
+    boardToggle.textContent = open ? '회차별 ▴' : '회차별 ▾';
+    store.set(K.BOARD_OPEN, open ? '1' : '');
+  };
+  setBoard(!!store.get(K.BOARD_OPEN));
+  boardToggle.onclick = () => setBoard($('boardGrid').classList.contains('hidden'));
+}
+
 // ================= 시계 =================
 // 오픈 예약이 걸리면 이 시계가 기준이 된다. 대기 화면의 생존 신호 표시도 같은 틱에서 그린다.
 function startClock() {

@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 // 회차(관) 선택 화면: 이 방송의 관 목록 + 각 잔여좌석.
 // 잔여 = total − 임시점유(Redis) − 판매완료(MySQL). 두 출처 합산 필수.
@@ -45,10 +46,22 @@ public class ScreeningService {
     // 좌석 현황판 — 입장 전에도 보이는 집계. 게이트가 없다.
     // 좌석 번호나 누가 잡았는지는 내보내지 않고 회차별 총/잔여 수만 준다. 실제 예매는 여전히
     //   게이트 뒤에서만 되고, 이 숫자는 매표소 앞 전광판처럼 밖에서 보라고 있는 값이다.
-    // 오픈 전 화면에서 방문자가 볼 것이 "대기 0 · 오픈 전"뿐이라 움직이는 값이 없었다 —
-    //   그 자리에 이 숫자를 놓으면 러시가 좌석을 깎는 것이 밖에서도 보인다.
+    //
+    // ★ 이 경로만 결과를 짧게 캐시한다. 게이트 뒤 목록(listForMovie)과 달리 누구나 부를 수 있고,
+    //   부르는 화면이 영화 목록 — 오픈을 기다리는 인원 전부가 앉아 있는 자리다. 방문자마다
+    //   MySQL group by 와 Redis 다중 조회가 돌면 대기 인원에 비례해 그 부하가 곱해진다.
+    //   전광판이므로 초 단위로 최신일 필요가 없다. 같은 창 안의 요청은 한 번 읽은 값을 나눠 쓴다.
+    private static final long BOARD_TTL_MS = 1000;
+    private final Map<String, Cached> boardCache = new ConcurrentHashMap<>();
+    private record Cached(long at, List<ScreeningView> views) {}
+
     public List<ScreeningView> board(String movieId) {
-        return compute(movieId);
+        long now = System.currentTimeMillis();
+        Cached c = boardCache.get(movieId);
+        if (c != null && now - c.at() < BOARD_TTL_MS) return c.views();
+        List<ScreeningView> views = compute(movieId);
+        boardCache.put(movieId, new Cached(now, views));
+        return views;
     }
 
     private List<ScreeningView> compute(String movieId) {

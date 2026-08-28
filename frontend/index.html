@@ -106,8 +106,12 @@
             <a class="btn ghost small con-jump" href="#simConsole">시뮬레이터 콘솔로 이동 ↓</a>
 
             <div class="board" id="seatBoard" hidden>
-              <div class="board-head">좌석 현황 <span class="board-sub">회차별 잔여 / 전체</span></div>
-              <div class="board-grid" id="boardGrid"></div>
+              <div class="board-head">
+                <span class="board-sum" id="boardSum"></span>
+                <button type="button" class="linklike" id="boardToggle"
+                        aria-expanded="false" aria-controls="boardGrid">회차별 ▾</button>
+              </div>
+              <div class="board-grid hidden" id="boardGrid"></div>
             </div>
           </section>
 

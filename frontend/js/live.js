@@ -48,6 +48,18 @@ export async function pollBoard() {
   const { ok, data } = await api(`/api/screenings/board?movieId=${encodeURIComponent(S.simMovieId)}`);
   if (!ok || !Array.isArray(data) || !data.length) { box.hidden = true; return; }
   box.hidden = false;
+  // 한 줄 요약은 늘 보인다 — 좌석이 줄어드는 것을 첫 화면에서 보게 하는 것이 이 판의 목적이다.
+  //   회차 12칸을 상시 펼쳐 두면 예매 카드가 그만큼 밀리므로 상세는 접어 둔다.
+  const total = data.reduce((a, s) => a + s.total, 0);
+  const remain = data.reduce((a, s) => a + s.remain, 0);
+  const sum = $('boardSum');
+  if (sum) sum.innerHTML = `좌석 <b id="boardRemain">${remain}</b> / ${total} 남음`;
+  if (boardPrev.__sum !== undefined && boardPrev.__sum !== remain) {
+    const b = $('boardRemain');
+    if (b) { b.classList.add('bump'); setTimeout(() => b.classList.remove('bump'), 500); }
+  }
+  boardPrev.__sum = remain;
+
   const grid = $('boardGrid');
   grid.innerHTML = data.map(s => {
     const pct = s.total > 0 ? Math.round((s.total - s.remain) / s.total * 100) : 0;

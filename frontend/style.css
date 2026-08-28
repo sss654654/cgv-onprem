@@ -304,8 +304,10 @@ body{
 
 /* 좌석 현황판 — 입장 전에도 보이는 회차별 잔여/전체. 러시가 좌석을 깎는 것이 여기서 보인다 */
 .board{margin-top:18px}
-.board-head{font-size:var(--fs-xs);font-weight:800;color:var(--txt-3);letter-spacing:.06em;margin-bottom:8px}
-.board-sub{font-weight:600;letter-spacing:0;margin-left:6px;opacity:.7}
+.board-head{display:flex;align-items:baseline;gap:10px;margin-bottom:8px}
+.board-sum{font-size:var(--fs-sm);color:var(--txt-3);font-weight:700}
+.board-sum b{font-size:var(--fs-lg);color:var(--txt);font-weight:800;font-variant-numeric:tabular-nums}
+.board-sum b.bump{animation:bump .5s var(--ease)}
 .board-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
 .bd{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--r-2);
     padding:10px 12px;display:flex;align-items:baseline;justify-content:space-between;gap:8px}

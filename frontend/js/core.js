@@ -41,7 +41,7 @@ export const S = {
 export const K = {
   AUTH: 'cgv_auth', FLOW: 'cgv_flow', ROSTER: 'cgv_roster',
   // 소개는 기본이 접힘이라 "편 선택"을 기억한다. 옛 키(cgv_intro_closed)는 반대 뜻이라 쓰지 않는다.
-  CONSOLE: 'cgv_console', INTRO_OPEN: 'cgv_intro_open',
+  CONSOLE: 'cgv_console', INTRO_OPEN: 'cgv_intro_open', BOARD_OPEN: 'cgv_board_open',
   OPEN_AT: 'cgv_open_at_ms', OPEN_N: 'cgv_open_n', OPEN_FIRED: 'cgv_open_fired',
   OPEN_SEEDED: 'cgv_open_seeded', OPEN_HISTORY: 'cgv_open_history',
 };

@@ -37,8 +37,20 @@ const DOT_NAME = {
 };
 
 // 끝난 관객(예매 성공·빈손 퇴장)은 스트립에 흔적으로 남긴다 — 한 판이 어떻게 끝났는지가
-//   그 점들이다. 다만 무한히 쌓이면 매 틱 도는 필터가 커지고 점이 수천 개가 되어 판이 안 읽힌다.
-//   최근 것부터 이만큼만 남기고 오래된 흔적을 걷어낸다.
+//   그 점들이다. 다만 다음 판이 그 위에 겹치면 두 판이 한 줄에 섞여 읽히지 않는다.
+//   그래서 "새 판을 시작한다"는 행동(투입·오픈 러시)에서 앞 판의 흔적을 비운다.
+//   시간으로 지우지 않는 이유: 보고 있는 도중에 사라진다. 판이 끝나자마자 지우지 않는 이유:
+//   결과를 볼 새가 없다. 다음 판을 시작하겠다는 것이 곧 앞 판을 다 봤다는 신호다.
+export function clearDone() {
+  const before = S.fakes.length;
+  S.fakes = S.fakes.filter(f => f.state !== 'booked' && f.state !== 'gone');
+  return before - S.fakes.length;
+}
+
+// 무한히 쌓이는 것은 위 초기화와 별개로 막는다 — 한 판 안에서도 회전이 계속되면 늘어난다.
+// 여럿 중 하나를 고른다. 목록 순서대로 고르면 같은 틱의 관객 전원이 같은 것을 집는다.
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
 const KEEP_DONE = 200;
 function pruneDone() {
   const done = S.fakes.filter(f => f.state === 'booked' || f.state === 'gone');
@@ -72,7 +84,9 @@ export function renderStrip() {
 
 // ================= 관객 생성·투입 =================
 // 생성만 하고 아직 서버로 보내지 않는다(대기실에 모으는 경우가 있다).
+// 새로 만든다는 것이 곧 새 판이라, 앞 판의 끝난 흔적을 여기서 비운다.
 function createFakes(n, state) {
+  clearDone();
   const list = [];
   for (let i = 0; i < n; i++) {
     const rid = 'bot-' + uuid().slice(0, 8);
@@ -216,12 +230,20 @@ export async function botTick() {
 
         const sc = await api(`/api/screenings?movieId=${encodeURIComponent(S.simMovieId)}&requestId=${encodeURIComponent(f.rid)}`);
         if (!sc.ok || !sc.data) return;   // 입장 직후 인증이 아직 없으면 403 — 다음 틱에 다시 시도한다
-        const avail = sc.data.find(s => s.remain > 0);
-        if (!avail) { f.state = 'gone'; feedLog(`관객-${f.label} 퇴장 — 전 회차 매진`, 'gone'); return; }
+        // 회차를 목록 순서대로 고르면(첫 번째 여유 회차) 모든 관객이 같은 관으로 몰린다.
+        //   화면에서는 한 회차만 줄고 나머지는 그대로라 판이 실제와 다르게 보이고,
+        //   좌석 선점이 그 회차 하나에 집중돼 서로 부딪힌다. 여유 있는 회차 중에서 흩는다.
+        const opens = sc.data.filter(s => s.remain > 0);
+        if (!opens.length) { f.state = 'gone'; feedLog(`관객-${f.label} 퇴장 — 전 회차 매진`, 'gone'); return; }
+        const avail = pick(opens);
 
         const seats = await api(`/api/seats?screeningId=${encodeURIComponent(avail.screeningId)}&requestId=${encodeURIComponent(f.rid)}`);
-        const free = (seats.data || []).find(s => !s.taken);
-        if (!free) return;
+        // 좌석도 같은 이유로 흩는다. 첫 빈 좌석을 고르면 같은 틱의 관객 전원이 같은 좌석을
+        //   선점하려 해 하나만 성공하고 나머지는 409로 돌아간다 — 병렬 폭을 올려도
+        //   실제 처리량이 틱당 한두 명에 머무는 원인이 이것이다.
+        const frees = (seats.data || []).filter(s => !s.taken);
+        if (!frees.length) return;
+        const free = pick(frees);
 
         const sel = await api('/api/seats/select', { method: 'POST', body: { screeningId: avail.screeningId, seatNos: [free.seatNo], requestId: f.rid } });
         if (!sel.ok) return;
