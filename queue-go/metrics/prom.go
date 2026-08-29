@@ -121,6 +121,52 @@ func RegisterFailureCounters(publish, consume func() float64) {
 		Help: "completed 처리 실패(미커밋) 누적 — 자리 반납 막힘"}, consume)
 }
 
+// ── 발행: queue 가 booking 에게 보내는 두 통보 ──────────────────────────────
+//
+// queue 가 발행하는 토픽은 둘이고 뜻이 반대다.
+//   admissions          자리를 줬다 → booking 이 입장 인증을 만든다
+//   admissions-revoked  자리를 뺏었다(세션 만료·이탈) → booking 이 인증을 지운다
+// 지금까지 승격분만 카운터로 셌는데(promotedTotal), 정원이 비어 있을 때 enter 가 승격 없이
+//   바로 입장시키는 몫이 빠져 "자리를 준 총량"이 안 나왔다. 발행 지점이 여럿이라(enter 핸들러·
+//   승격 루프·만료 루프·재발행 스윕) 각각에 심으면 빠뜨리는데, 전부 PublishEvents 한 곳을
+//   지나므로 거기 한 번만 올린다.
+//
+// 건수와 지연을 나눠 두는 이유: 발행은 여러 건을 한 번의 WriteMessages 로 묶어 보낸다.
+//   그래서 히스토그램의 관측 1건 = 배치 1회이고 사람 수가 아니다. 사람 수는 이 카운터가 센다.
+var kafkaPublished = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "queue_kafka_published_total",
+	Help: "queue 가 발행한 이벤트 건수 — topic 별. admissions=자리 줌, admissions-revoked=자리 뺏음"},
+	[]string{"topic"})
+
+// 발행에 걸린 시간 = WriteMessages 호출 시간(브로커가 받았다고 답할 때까지, min.insync 복제 확인 포함).
+//   booking 이 소비해 인증을 만들기까지는 여기 안 들어간다 — 그건 booking_admission_lag 이다.
+//   이 선이 낮은데 사용자가 못 들어가면 원인은 발행이 아니라 소비 쪽이다.
+// exemplar 를 붙여 승격 루프·만료 루프의 트레이스로 들어가는 입구를 만든다. 두 루프는 HTTP
+//   요청이 아니라 대시보드에서 누를 자리가 없었고, Tempo 에서 이름으로 검색해야만 열렸다.
+var kafkaPublishDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	Name: "queue_kafka_publish_duration_seconds",
+	Help: "발행 1회(배치)에 걸린 시간 — topic 별",
+	Buckets: []float64{
+		0.001, 0.0025, 0.005, 0.01, 0.025, 0.05,
+		0.1, 0.25, 0.5, 1, 2.5, 5, 10,
+	},
+}, []string{"topic"})
+
+// ObservePublish — 발행 성공 1회를 기록한다. n = 그 배치에 담긴 이벤트 수.
+// 표본에 남은 요청에만 exemplar 를 붙인다(없는 트레이스를 가리키지 않게).
+func ObservePublish(ctx context.Context, topic string, n int, d time.Duration) {
+	kafkaPublished.WithLabelValues(topic).Add(float64(n))
+
+	obs := kafkaPublishDuration.WithLabelValues(topic)
+	if sc := trace.SpanContextFromContext(ctx); sc.IsSampled() {
+		if eo, ok := obs.(prometheus.ExemplarObserver); ok {
+			eo.ObserveWithExemplar(d.Seconds(), prometheus.Labels{"trace_id": sc.TraceID().String()})
+			return
+		}
+	}
+	obs.Observe(d.Seconds())
+}
+
 // ── Kafka 왕복: booking 이 예매를 확정한 시각부터 자리가 실제로 빈 시각까지 ─────
 //
 // 회전 속도(정원 ÷ 체류 시간)에 이 구간이 통째로 들어간다. 발행 건수와 소비 건수는 각각

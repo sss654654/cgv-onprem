@@ -161,11 +161,16 @@ func (p *Producer) PublishEvents(ctx context.Context, topic string, evs []Event)
 		return nil
 	}
 
+	// 발행 지점이 여럿이지만(enter 핸들러·승격 루프·만료 루프·재발행 스윕) 전부 이 함수를
+	//   지난다. 건수·소요를 여기 한 곳에서만 기록해야 어느 경로도 빠지지 않는다.
+	start := time.Now()
 	err := p.w.WriteMessages(ctx, msgs...)
 	if err != nil {
 		n := PublishFailures.Add(int64(len(msgs)))
 		slog.ErrorContext(ctx, "발행 실패", "topic", topic, "batch", len(msgs), "total_failures", n, "err", err)
 	} else {
+		// 성공한 발행만 센다. 실패는 PublishFailures 가 따로 세고, 저널이 남아 다음 스윕이 재시도한다.
+		metrics.ObservePublish(ctx, topic, len(msgs), time.Since(start))
 		slog.InfoContext(ctx, "발행", "topic", topic, "batch", len(msgs))
 	}
 	return err
