@@ -1,10 +1,15 @@
 package com.cgv.booking.redis;
 
 import com.cgv.booking.config.CgvProps;
+import org.springframework.data.redis.connection.RedisStringCommands;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.types.Expiration;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 
 // admitted = 방송 입장 인증. Kafka admissions로 채워지고, 게이트로 검사.
 // 영화(movie) 단위 — 사람은 방송에 입장하지 관에 입장하는 게 아님.
@@ -32,6 +37,28 @@ public class AdmittedService {
     // Kafka admissions 소비 시 — 입장 인증 발급(TTL 동반). 중복 수신은 TTL 재설정만 하고 무해(멱등).
     public void add(String movieId, String requestId) {
         redis.opsForValue().set(key(movieId, requestId), "1", ttl);
+    }
+
+    // 배치 소비용 인증 항목.
+    public record Admission(String movieId, String requestId) {}
+
+    // 여러 명의 인증을 파이프라인 한 왕복으로 발급한다.
+    // 한 명씩 add()를 부르면 명수만큼 왕복한다 — 예매 오픈 순간 수백 명의 admissions가 몰릴 때
+    // 그 왕복 수가 소비 속도의 상한이 됐다(2026-08-29 사용자 10,000 부하: 소비 초당 약 28건,
+    // 인증 지연 p99 9.94초). 파이프라인은 명령을 몰아 보내고 응답을 몰아 받아 왕복이 1회다.
+    // 각 SET은 여전히 개별 명령이라 멱등성은 add()와 같다 — 중복 수신은 TTL 재설정.
+    // 연결 실패는 예외로 전파된다 → 리스너가 배치를 재시도한다(멱등이라 재처리 무해).
+    public void addAll(List<Admission> admissions) {
+        byte[] one = "1".getBytes(StandardCharsets.UTF_8);
+        Expiration expiration = Expiration.from(ttl);
+        redis.executePipelined((RedisCallback<Object>) conn -> {
+            for (Admission a : admissions) {
+                conn.stringCommands().set(
+                        key(a.movieId(), a.requestId()).getBytes(StandardCharsets.UTF_8),
+                        one, expiration, RedisStringCommands.SetOption.UPSERT);
+            }
+            return null;
+        });
     }
 
     // 게이트: 이 사람이 입장객이냐. 모든 booking 동작 전 검사.

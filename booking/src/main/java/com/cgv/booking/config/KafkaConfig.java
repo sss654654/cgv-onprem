@@ -4,9 +4,13 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.kafka.ConcurrentKafkaListenerContainerFactoryConfigurer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.util.backoff.FixedBackOff;
@@ -50,5 +54,34 @@ public class KafkaConfig {
                         record.topic(), record.value(), dltEx.toString());
             }
         }, backOff);
+    }
+
+    // admissions 전용 배치 리스너 팩토리.
+    //
+    // 기본 팩토리는 레코드 하나마다 리스너를 부른다. 예매 오픈 순간 admissions 수백 건이
+    // 몇 초 안에 발행되는데, 건별 처리(호출 1회 + Redis 왕복 1회)로는 소비가 초당 약 28건이
+    // 상한이라 뒤쪽 레코드의 인증이 최대 10초 밀렸다(2026-08-29 사용자 10,000 부하 실측).
+    // 배치 리스너는 poll이 가져온 레코드 묶음을 한 번에 넘긴다 — 호출 비용과 Redis 왕복을
+    // 묶음당 1회로 줄인다(AdmittedService.addAll의 파이프라인과 짝).
+    //
+    // admissions만 배치로 바꾼다 — admissions-revoked 소비(AdmissionExpiryConsumer)는
+    // 유량이 회수 속도(초당 수 건)라 건별 처리로 충분하고, 기본 팩토리를 그대로 쓴다.
+    //
+    // 오류 처리: 위 kafkaErrorHandler를 같이 쓴다. 배치 리스너가 예외를 던지면 배치 전체가
+    // 재시도되고(인증 발급은 멱등이라 재처리 무해), 소진되면 레코드별로 DLT에 실린다.
+    // 파싱 실패는 리스너 안에서 걸러 배치를 던지지 않는다 — 포이즌 메시지 하나가
+    // 정상 레코드 묶음을 재시도로 끌고 가지 않게.
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<Object, Object> batchKafkaListenerContainerFactory(
+            ConcurrentKafkaListenerContainerFactoryConfigurer configurer,
+            ConsumerFactory<Object, Object> consumerFactory,
+            DefaultErrorHandler kafkaErrorHandler) {
+        ConcurrentKafkaListenerContainerFactory<Object, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
+        configurer.configure(factory, consumerFactory);   // application.yml의 리스너 설정(동시성·관측)을 승계
+        factory.setBatchListener(true);
+        // 배치 리스너의 커밋은 배치 단위여야 한다 — 설정이 record여도 여기서 batch로 고정
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.BATCH);
+        factory.setCommonErrorHandler(kafkaErrorHandler);
+        return factory;
     }
 }
