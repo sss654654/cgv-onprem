@@ -111,12 +111,19 @@ frontend/
 ## 게이트웨이 규칙 (nginx.conf)
 
 ```
-location /api/admission/   → proxy_pass http://queue:8090     (입장 통제)
-location /api/             → proxy_pass http://booking:8091   (예매)
-location /                 → try_files → index.html           (SPA fallback)
+location /api/admission/   → proxy_pass  queue        (입장 통제)
+location /api/movies       → proxy_pass  booking      + 캐시 10초 · 캐시 잠금
+location /api/             → proxy_pass  booking      (예매)
+location /                 → try_files → index.html   (SPA fallback)
                              + Cache-Control: no-cache
 ```
 
+- **`/api/movies`만 nginx가 캐시한다.** 영화 목록은 대기열 게이트 **앞**에 있는 경로라 정원이 막아 주지 못하고, 대기 중인 전원이 주기적으로 부른다 — 부하 판에서 이 경로 때문에 booking의 readiness 프로브가 떨어졌다. 목록은 영화가 추가될 때만 바뀌므로 초 단위로 낡아도 화면이 틀리지 않는다.
+  - `proxy_cache_lock on` — 캐시가 빈 순간 booking으로 나가는 요청은 하나뿐이고 나머지는 기다린다. 이게 없으면 만료 순간마다 같은 몰림이 그대로 재현된다.
+  - `proxy_cache_use_stale` — booking이 죽어도 낡은 목록으로 화면이 뜬다. 대기열은 계속 돈다.
+  - 캐시 경로는 이미 붙어 있는 쓰기 가능한 emptyDir 안이다(`readOnlyRootFilesystem=true`라 그 밖은 못 쓴다).
+  - `X-Cache-Status` 헤더로 HIT/MISS를 확인한다.
+- **업스트림 주소는 변수로 둔다.** `proxy_pass`에 변수가 있으면 nginx가 이름을 기동 시점이 아니라 요청 시점에 푼다 — 뒷단 파드가 먼저 뜨지 않아도 nginx가 기동에 실패하지 않는다.
 - 폴링 전환 후 SSE 스트림용 설정(버퍼 off·긴 타임아웃)은 제거했다. 짧은 요청·응답이라 불필요하다.
 - 파일명에 해시가 없어 캐시버스팅 수단이 없으므로 `no-cache`로 재배포 시 구버전 노출을 막는다(조건부 요청이라 304로 처리된다).
 - k3s에서는 Ingress가 `/api`를 먼저 가로채므로 이 proxy 규칙은 타지 않는다(그대로 둬도 무해).
@@ -131,6 +138,7 @@ location /                 → try_files → index.html           (SPA fallback)
 
 ## 알려진 한계 / 다음
 
-- **API가 무인증**: 시뮬레이터 조작 계열(enter 대량 투입)을 프론트가 막을 방법이 없다 — 상한·게이트는 연출이지 방어가 아니다. 인터넷 공개 전에 서버측 인증·rate limit이 선행 조건이다.
+- **API가 무인증**: 시뮬레이터 조작 계열(enter 대량 투입)을 프론트가 막을 방법이 없다 — 상한·게이트는 연출이지 방어가 아니다. 서비스는 이 상태로 인터넷에 공개돼 있다. rate limit은 넣지 않기로 했다: 막고 싶은 것은 "한 출처가 여러 몫을 가져가는 것"인데 세는 것은 "출발지당 요청 수"라 재는 축이 다르고, CDN 엣지 뒤에서는 출발지가 전부 엣지 주소로 뭉친다. 좌석 오염은 주기 초기화(클러스터 쪽 CronJob)가 받고 대량 트래픽은 엣지가 앞에서 받는다.
 - **좌석 폴링**: 좌석도는 5초 간격 새로고침으로 갱신한다(정확성은 서버의 409가 보장하므로 지연은 무해).
+- **로비의 좌석 현황판은 CDN이 캐시한다**: 회차별 잔여 좌석 조회(`/api/screenings/board`)도 게이트 앞 경로라 대기 중인 전원이 3초마다 부른다. booking 응답에 `Cache-Control: max-age=5, public`을 붙여 엣지가 받게 했다 — TTL이 폴링 주기보다 커야 만료 순간과 폴링이 겹치지 않는다. 응답에 사용자별 내용이 없어(`requestId`를 받지 않는다) `public`으로 둘 수 있다. 회차 목록에는 같은 조치를 못 한다 — URL에 `requestId`가 들어가 사람마다 응답이 다르고, 캐시하면 입장하지 않은 사람이 입장한 사람의 응답을 받아 게이트가 무력해진다.
 - **og:image 경로**: `og:image`가 `/og.png` 상대 경로다. 링크 공유 카드는 절대 URL을 요구하는 곳이 있어, 도메인을 잡는 단계에서 절대 경로로 바꾼다.

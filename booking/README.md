@@ -131,6 +131,8 @@ Set을 쓰면 멤버별 TTL이 없어 만료를 Redis가 대신해줄 수 없다
 
 > 처음에는 점유수만 회차별 루프였다. 부하 판에서 이 경로의 p99가 다른 엔드포인트의 5배로 나왔고, 트레이스를 열어 보니 요청 하나에 `evalsha` span이 20개였다. 지표는 "느리다"까지만 말했고 "왕복이 20번"은 트레이스가 답했다.
 
+**그 위에 짧은 캐시와 single-flight가 얹혀 있다.** 왕복을 줄여도 대기 중인 전원이 같은 주기로 이 경로를 부르면 캐시가 만료되는 순간 전원이 동시에 계산을 시작한다. 계산이 DB 커넥션을 쓰므로 풀이 마비되고, 풀이 마비되니 계산이 느려지고, 느려지는 동안 대기가 더 쌓인다 — 공개 경로 부하 판에서 이 고리로 5xx가 초당 467건까지 올라갔고 `actuator`조차 응답하지 못했다. 조치는 만료를 본 요청 중 하나만 계산하게 하는 것이다(`AtomicBoolean.compareAndSet`). 나머지는 직전 값을 즉시 받는다. 풀 크기는 그대로 뒀다 — 수요 쪽 결함이라 풀을 늘렸으면 같은 폭주가 더 큰 규모로 났다.
+
 ---
 
 ## 코드 구조
@@ -219,6 +221,7 @@ booking_seats  (id, booking_id, screening_id, seat_no, UNIQUE(screening_id, seat
 | `booking.confirm{result}` | confirm() 종착점별 카운트 — `success`·`replay`·`lock_expired`·`seat_conflict`·`error`·`forbidden`·`no_screening`·`bad_request` |
 | `booking.admissions{result}` | 인증 발급 소비 종착점(`ok`·`parse_error`·`missing_field`) |
 | `booking.admission.revoked{result}` | 인증 회수 소비 종착점 |
+| `booking.admission.lag` | queue가 승격을 발행한 시각부터 입장 인증이 발급되기까지의 지연(Timer, 상한 60초). 두 서비스를 잇는 Kafka 구간이 밀리는지를 이 값 하나로 본다 — `consumer lag`은 메시지가 도착했는지만 말하고, 도착한 뒤 처리가 밀린 것은 잡지 못한다 |
 
 프레임워크 지표가 구분하지 못하는 "새 예매 vs 멱등 replay", "진짜 락뚫림 vs 락만료"를 라벨로 구분한다.
 
@@ -275,8 +278,8 @@ booking_seats  (id, booking_id, screening_id, seat_no, UNIQUE(screening_id, seat
 | `OTLP_HTTP_ENDPOINT` | http://localhost:4318/v1/traces | Tempo/collector(HTTP) |
 | `DDL_AUTO` / `SEED_ON_START` | none / false | 로컬 단일파드만 update / true |
 
-세 시계의 순서: `SEAT_LOCK_TTL(45) < SESSION_TIMEOUT(60, queue) < ADMITTED_TTL(180)`.
-좌석락은 세션보다 먼저 풀려야 자리를 잃은 사용자가 좌석을 붙잡지 않고, 인증은 세션보다 늦게 만료돼야 정상 세션이 중간에 끊기지 않는다.
+세 시계의 순서: `SEAT_LOCK_TTL < SESSION_TIMEOUT(queue) < ADMITTED_TTL`.
+좌석락은 세션보다 먼저 풀려야 자리를 잃은 사용자가 좌석을 붙잡지 않고, 인증은 세션보다 늦게 만료돼야 정상 세션이 중간에 끊기지 않는다. 표의 값은 코드 기본값이고, **배포값은 `180 < 300 < 600`이다** — 부하 판에서 한 사람의 여정(회차 조회 10-30초 + 좌석 선택 30-120초 + 결제 60-180초)을 재고 그 합에 맞췄다. 순서가 깨지면 자원이 멀쩡해도 좌석 선택이 403이 되어 처리량만 무너진다.
 
 ---
 

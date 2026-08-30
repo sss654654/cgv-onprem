@@ -185,6 +185,7 @@ queue-go/
 | `queue_loop_last_tick_timestamp_seconds{loop}` | 루프 심박 — `now − 값`이 커지면 stall |
 | `queue_kafka_publish_failures_total` | 발행 실패 누적 |
 | `queue_kafka_consume_failures_total` | 자리 반환 처리 실패 누적 |
+| `queue_completed_total` | 자리 반환 건수. 지연 히스토그램과 분리해 센다 — 히스토그램의 `_count`는 "잰 건수"라 관측이 빠진 구간과 실제로 0건인 구간이 같아 보인다 |
 | `queue_redis_pool{state}` | 풀 사용중·대기 |
 
 루프 심박은 `promote` · `session_timeout` · `waiting_timeout` · `pending_sweep` 넷을 찍는다.
@@ -236,14 +237,16 @@ docker compose up --build -d
 | `REDIS_SENTINEL_ADDRS` | (없음) | 있으면 Sentinel 경유로 접속 |
 | `REDIS_PASSWORD` | (없음) | 배포 시 Secret |
 | `REDIS_POOL_SIZE` | 0(라이브러리 기본) | 부하 실측으로 확정 |
-| `MAX_SESSIONS` | 2 | 데모 소정원. 실운영 = 측정값 |
-| `SESSION_TIMEOUT` | 60s | active 수명(좌석락 45s < 세션 60s). 실운영 600 |
+| `MAX_SESSIONS` | 2 | 데모 소정원. **배포값 1,000** — 상한은 자원이 아니라 좌석 4,000이 정한다 |
+| `SESSION_TIMEOUT` | 60s | active 수명. **배포값 300s** (좌석락 180 < 세션 300 < 인증 600) |
 | `WAITING_TIMEOUT` | 30s | 폴링 주기의 넉넉한 배수 |
-| `QUEUE_PROCESS_INTERVAL` | 2000ms | 승격 주기 |
-| `PROCESSING_BATCH_SIZE` | 100 | 한 틱 승격 상한 |
+| `QUEUE_PROCESS_INTERVAL` | 2000ms | 승격 주기. **배포값 500ms** |
+| `PROCESSING_BATCH_SIZE` | 100 | 한 틱 승격 상한. **배포값 25** |
 | `SESSION_CLEANUP_INTERVAL` | 10000ms | active 만료 검사 주기 |
 | `WAITING_CLEANUP_INTERVAL` | 10000ms | waiting 만료 검사 주기 |
 | `PENDING_SWEEP_INTERVAL` | 5000ms | 저널 스윕 주기 = 회수가 booking에 닿는 최대 지연 |
+
+승격 배치와 주기는 곱이 상한을 정한다 — `25 / 0.5초`와 `100 / 2초`는 둘 다 초당 50명이다. 25/0.5초를 고른 이유는 상한이 아니라 **한 번에 나가는 뭉텅이 크기**다. 오픈 순간에는 정원이 통째로 비어 있어 배치가 그대로 한꺼번에 발행되는데, 뭉텅이가 100이면 그 순간 Kafka로 나가는 덩어리도 네 배가 되어 소비 쪽 지연이 그만큼 길어진다(공개 경로 판에서 인증 지연 p99 4.971초 → 0.988초).
 | `KAFKA_BROKER` | localhost:9092 | |
 | `OTLP_GRPC_ENDPOINT` | localhost:4317 | Tempo/collector(gRPC) |
 | `ADMIN_TOKEN` | (없음) | 초기화 API 인증. 비어 있으면 그 라우트가 등록되지 않는다 |
