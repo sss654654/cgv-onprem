@@ -13,6 +13,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 // 회차(관) 선택 화면: 이 방송의 관 목록 + 각 잔여좌석.
 // 잔여 = total − 임시점유(Redis) − 판매완료(MySQL). 두 출처 합산 필수.
@@ -35,33 +36,59 @@ public class ScreeningService {
     //   판매수: 회차마다 count 쿼리를 돌리지 않고 group by 한 번으로 전부 받는다(JDBC 왕복 2회).
     //   점유수: 회차별 인덱스 Set을 읽는다(회차당 Redis 왕복 1회). 이 Redis는 queue가 대기열 폴링을
     //           처리하는 인스턴스와 같아서, 여기서 왕복이 늘면 queue의 지연이 먼저 무너진다.
+    // 데이터는 아래 캐시(cachedCompute)를 board 와 공유한다 — 같은 compute 를 쓰는 같은 숫자이고,
+    //   예매 오픈 순간 정원 전체가 이 화면을 동시에 열어 캐시 없이는 그 인원만큼 compute 가 몰린다.
+    //   1초 묵은 잔여수는 무해하다 — 좌석 확보 판정은 select·확정의 실검증이 따로 한다.
     public List<ScreeningView> listForMovie(String movieId, String requestId) {
         // 게이트: 방송 입장객 아니면 403.
         if (!admitted.isAdmitted(movieId, requestId)) {
             throw ApiException.forbidden("입장객이 아닙니다(미승인). 대기열을 거쳐 입장하세요.");
         }
-        return compute(movieId);
+        return cachedCompute(movieId);
     }
 
     // 좌석 현황판 — 입장 전에도 보이는 집계. 게이트가 없다.
     // 좌석 번호나 누가 잡았는지는 내보내지 않고 회차별 총/잔여 수만 준다. 실제 예매는 여전히
     //   게이트 뒤에서만 되고, 이 숫자는 매표소 앞 전광판처럼 밖에서 보라고 있는 값이다.
+    public List<ScreeningView> board(String movieId) {
+        return cachedCompute(movieId);
+    }
+
+    // 짧은 캐시 + single-flight. 전광판이므로 초 단위로 최신일 필요가 없다.
     //
-    // ★ 이 경로만 결과를 짧게 캐시한다. 게이트 뒤 목록(listForMovie)과 달리 누구나 부를 수 있고,
-    //   부르는 화면이 영화 목록 — 오픈을 기다리는 인원 전부가 앉아 있는 자리다. 방문자마다
-    //   MySQL group by 와 Redis 다중 조회가 돌면 대기 인원에 비례해 그 부하가 곱해진다.
-    //   전광판이므로 초 단위로 최신일 필요가 없다. 같은 창 안의 요청은 한 번 읽은 값을 나눠 쓴다.
+    // 캐시만으로는 부족했다 — 만료 순간에 도착한 요청 전원이 각자 compute 를 돌았고, 사용자
+    //   10,000 부하(2026-08-30)의 도착 구간에서 그 동시 compute 가 DB 커넥션 풀을 삼켰다:
+    //   풀 30 전부 사용 + 대기 2,013. 대기가 늘수록 compute 가 느려져 캐시 갱신이 더 늦어지고,
+    //   그동안 도착한 요청이 전부 또 compute 로 가는 자기강화 폭주가 됐다. 요청을 받던 스레드가
+    //   전부 풀 대기에 매달려 health 응답까지 5초를 넘겼고, kubelet 이 파드를 죽였다 —
+    //   죽어 있던 동안 traefik 이 초당 최대 467건의 5xx 를 돌려줬다.
+    //
+    // single-flight: 만료를 본 요청 중 하나만 계산하고(compareAndSet), 나머지는 직전 값을
+    //   즉시 받는다. 로비 인원이 몇이든 compute 는 movie 당 동시에 1개다.
+    //   직전 값이 아예 없는 경우(기동 직후 첫 요청들이 겹칠 때)만 각자 계산한다 — 그 창은
+    //   기동 후 1초뿐이라 폭주가 못 된다.
     private static final long BOARD_TTL_MS = 1000;
     private final Map<String, Cached> boardCache = new ConcurrentHashMap<>();
+    private final Map<String, AtomicBoolean> refreshing = new ConcurrentHashMap<>();
     private record Cached(long at, List<ScreeningView> views) {}
 
-    public List<ScreeningView> board(String movieId) {
+    private List<ScreeningView> cachedCompute(String movieId) {
         long now = System.currentTimeMillis();
         Cached c = boardCache.get(movieId);
         if (c != null && now - c.at() < BOARD_TTL_MS) return c.views();
-        List<ScreeningView> views = compute(movieId);
-        boardCache.put(movieId, new Cached(now, views));
-        return views;
+
+        AtomicBoolean flag = refreshing.computeIfAbsent(movieId, k -> new AtomicBoolean());
+        if (flag.compareAndSet(false, true)) {
+            try {
+                List<ScreeningView> views = compute(movieId);
+                boardCache.put(movieId, new Cached(System.currentTimeMillis(), views));
+                return views;
+            } finally {
+                flag.set(false);
+            }
+        }
+        if (c != null) return c.views();   // 다른 요청이 계산 중 — 직전 값으로 응답
+        return compute(movieId);           // 직전 값조차 없는 기동 직후뿐
     }
 
     private List<ScreeningView> compute(String movieId) {
