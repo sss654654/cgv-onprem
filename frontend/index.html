@@ -93,9 +93,9 @@
                   <span><svg viewBox="0 0 24 24"><use href="#i-argo"/></svg>Argo CD — GitOps 운영</span>
                 </div>
               </div>
-              <p class="intro-flow">입장 정원을 넘는 관객은 순번을 받아 기다리고, 자리가 빌 때마다 앞에서부터 입장합니다.</p>
+              <p class="intro-flow">입장 정원(지금 <b id="introCap">–</b>명)을 넘는 관객은 순번을 받아 기다리고, 자리가 빌 때마다 앞에서부터 입장합니다.</p>
               <p class="intro-note">학습용 데모라 실제 예매가 아니고 결제도 일어나지 않습니다. 대기열과 좌석은 모든 방문자가
-                 공유하며 3시간마다 비워집니다 — 다른 방문자의 가상 관객·러시가 숫자에 섞일 수 있습니다.
+                 공유하며 3시간마다(08–23시 정각) 비워집니다 — 다른 방문자의 가상 관객·러시가 숫자에 섞일 수 있습니다.
                  콘솔의 오픈 예약·가상 관객 표시는 이 브라우저에만 적용됩니다.</p>
               <p class="intro-links"><a href="https://github.com/sss654654/cgv-onprem" target="_blank" rel="noopener">GitHub 저장소 →</a></p>
             </div>
@@ -108,6 +108,7 @@
             <div class="board" id="seatBoard" hidden>
               <div class="board-head">
                 <span class="board-sum" id="boardSum"></span>
+                <span class="board-reset" id="boardReset"></span>
                 <button type="button" class="linklike" id="boardToggle"
                         aria-expanded="false" aria-controls="boardGrid">회차별 ▾</button>
               </div>
@@ -127,7 +128,7 @@
             <div class="con-clock"><span id="clock"></span><span id="clockSub" class="clock-sub"></span></div>
 
             <div class="con-group">
-              <div class="con-sec">관객 투입 <b class="sec-hint">최대 200명 — 대규모 부하 실측은 k6</b></div>
+              <div class="con-sec">관객 투입 <b class="sec-hint">최대 100명 — 대규모 부하 실측은 k6</b></div>
               <div class="con-row">
                 <select id="heroN" class="slot num"></select>
                 <button class="btn small primary" id="heroAdd">즉시 투입</button>
@@ -157,7 +158,7 @@
               <details class="con-hint">
                 <summary>각 항목이 하는 일</summary>
                 <p><b>켜짐</b> 입장한 관객이 좌석을 예매하고 바로 자리를 반환합니다. 다음 대기자가 곧바로 승격됩니다.</p>
-                <p><b>꺼짐</b> 입장한 관객이 아무것도 하지 않고 세션 60초를 다 씁니다. 정원이 막힌 상황을 재현합니다.</p>
+                <p><b>꺼짐</b> 입장한 관객이 아무것도 하지 않고 세션 시간 <b id="hintSecs">300</b>초를 다 씁니다. 정원이 막힌 상황을 재현합니다.</p>
                 <p><b>가상 관객 초기화</b> 아직 줄에 있는 관객을 대기열에서 빼고 아래 목록을 비웁니다. 예매 기록(DB)은 그대로입니다.</p>
               </details>
             </div>
@@ -184,6 +185,8 @@
         <div class="wait-title" id="waitMovieTitle">대기 중</div>
         <div class="wait-rank">내 대기 순서 <b id="waitRank">-</b>번째</div>
         <div class="wait-total">뒤에 <span id="waitBehind">-</span>명 · 예상 <span id="waitEta">-</span></div>
+        <!-- 왜 기다리는지를 화면이 설명한다. 정원은 서버 값(stats.capacity)으로 채운다 -->
+        <div class="wait-cap">동시 입장 정원 <b id="waitCapN">–</b>명 — 자리가 나는 대로 앞에서부터 입장합니다</div>
         <div class="wait-heart" id="waitHeart"></div>
         <div class="wait-hint">입장하면 자동으로 넘어갑니다 · 새로고침하면 순번이 뒤로 밀립니다</div>
         <button class="btn ghost" id="waitLeave">나가기</button>
@@ -195,7 +198,8 @@
       <div class="wait-card">
         <div class="wait-spinner"></div>
         <div class="wait-title">입장 중…</div>
-        <div class="wait-hint">데모 세션은 60초 — 시간 안에 좌석 선택과 결제까지 완료해야 합니다</div>
+        <!-- 세션 수명은 서버 값으로 채운다(live.js) — 하드코딩하면 env를 바꿨을 때 화면이 거짓말한다 -->
+        <div class="wait-hint">데모 세션은 <b id="enterSecs">300</b>초 — 시간 안에 좌석 선택과 결제까지 완료해야 합니다</div>
       </div>
     </section>
 

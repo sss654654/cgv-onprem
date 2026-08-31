@@ -4,7 +4,7 @@
 // 폴링이 곧 생존 신호라, 틱이 멈추면 대기 중인 관객은 30초 만에 서버가 회수한다.
 
 import {
-  S, K, store, $, toast, api, uuid, feedLog, fmtAt, fmtHMS, sessionSecs,
+  S, K, store, $, toast, api, uuid, sleep, feedLog, fmtAt, fmtHMS, sessionSecs,
   MAX_FAKES, INJECT_PRESETS, RUSH_PRESETS,
   effectiveGate, openAtMs, openRushN, openFiredAt, markOpenFired, clearOpen, isRushFresh,
   claimOpenFire, wonOpenFire,
@@ -25,6 +25,16 @@ const BOOK_CHUNK = 24;
 // 한 틱에서 자동 예매에 쓸 수 있는 시간. 나머지는 생존 폴링 몫으로 남긴다 —
 //   폴링이 끊기면 서버가 대기자를 회수하므로, 예매보다 폴링이 먼저다.
 const BOOK_BUDGET_MS = 1800;
+
+// 사람처럼 시간을 쓰게 하는 랜덤 둘 — 데모 가시성 장치다.
+//   투입 지터: 봇마다 0-4초 흩어져 줄을 선다. 흩지 않으면 정원(20)만큼이 같은 틱에
+//     들어가고, 이후의 예매·퇴장·재승격까지 전부 그 박자로 묶여 순번이 20씩 계단으로
+//     떨어진다(2026-08-31 데모 관찰).
+//   예매 체류: 승격 후 6-18초 뒤에 예매한다 — 회차·좌석을 고르는 시간. 같이 입장한
+//     무리가 같은 순간 빠져나가는 것(좌석 동시 감소·자리 동시 반환)이 사라진다.
+//     세션 수명(서버 값, 지금 300초)보다 훨씬 짧아 만료 위험은 없다.
+const ENTER_JITTER_MS = 4000;
+const bookDelay = () => 6000 + Math.random() * 12000;
 
 // ================= 스트립 =================
 const DOT_CLASS = { lobby: 'd-lobby', waiting: 'd-wait', admitted: 'd-in', booked: 'd-book', gone: 'd-gone' };
@@ -96,7 +106,9 @@ function createFakes(n, state) {
   return list;
 }
 
-// 실제로 줄을 세운다. 여섯 개씩 병렬로 보내 원거리에서도 투입이 생존 창(30초)을 넘기지 않게 한다.
+// 실제로 줄을 세운다. 봇마다 0-4초 지터를 주고 각자 줄을 선다 — 동시 입장 뭉텅이 방지.
+// 청크가 필요 없다: 4초에 최대 100명이면 동시 진행 요청이 왕복(공개 경로 약 0.85초) 기준
+//   20여 개라 생존 창(30초)에 한참 못 미친다.
 async function enterFakes(list, label) {
   if (!list.length) return;
   const gen = S.simGen;
@@ -105,22 +117,26 @@ async function enterFakes(list, label) {
   btn.disabled = true;
   if (!S.simTimer) S.simTimer = setInterval(botTick, TICK_MS);   // 투입 중에도 생존 폴링이 돌게 미리 켠다
 
-  let admitted = 0, waiting = 0, failed = 0;
+  let admitted = 0, waiting = 0, failed = 0, sent = 0;
   feedLog(`${label} ${list.length}명이 줄을 섭니다`, 'sys');
   try {
-    for (let i = 0; i < list.length && gen === S.simGen; i += CHUNK) {
-      const batch = list.slice(i, i + CHUNK).map(f =>
-        api('/api/admission/enter', { method: 'POST', body: { movieId: S.simMovieId, requestId: f.rid } })
+    await Promise.all(list.map(f =>
+      sleep(Math.random() * ENTER_JITTER_MS).then(() => {
+        if (gen !== S.simGen) return;
+        return api('/api/admission/enter', { method: 'POST', body: { movieId: S.simMovieId, requestId: f.rid } })
           .then(({ data }) => {
             if (gen !== S.simGen) return;
-            if (data && (data.status === 'ADMITTED' || data.status === 'ALREADY_ACTIVE')) { f.state = 'admitted'; f.entered = true; admitted++; }
+            if (data && (data.status === 'ADMITTED' || data.status === 'ALREADY_ACTIVE')) {
+              f.state = 'admitted'; f.entered = true; f.bookAt = Date.now() + bookDelay(); admitted++;
+            }
             else if (data && data.status === 'WAITING') { f.state = 'waiting'; f.entered = true; waiting++; }
             else { f.state = 'gone'; failed++; }   // 지연·네트워크 실패를 입장으로 위장하지 않는다
-          }));
-      await Promise.all(batch);
-      btn.textContent = `투입 중 ${Math.min(i + CHUNK, list.length)}/${list.length}`;
-      renderStrip();
-    }
+            sent++;
+            btn.textContent = `투입 중 ${sent}/${list.length}`;
+            if (sent % 5 === 0 || sent === list.length) renderStrip();
+          });
+      })
+    ));
   } finally { btn.disabled = false; btn.textContent = btnText; }
 
   if (gen !== S.simGen) return;
@@ -205,7 +221,11 @@ export async function botTick() {
         if (gen !== S.simGen || !p.ok || !p.data) return;
         if (p.data.status === 'EXPIRED') { f.state = 'gone'; expired.push(f.label); return; }
         if (p.data.status !== 'ADMITTED') return;   // 대기 상태면 도장만 찍고 줄을 유지한다
-        if (f.state === 'waiting') { f.state = 'admitted'; feedLog(`관객-${f.label} 승격 → 입장`, 'in'); }
+        if (f.state === 'waiting') {
+          f.state = 'admitted';
+          f.bookAt = Date.now() + bookDelay();   // 승격 직후 바로 예매하지 않는다 — 고르는 시간
+          feedLog(`관객-${f.label} 승격 → 입장`, 'in');
+        }
       }));
     }
     if (expired.length === 1) feedLog(`관객-${expired[0]} 퇴장 — 세션 만료`, 'gone');
@@ -221,7 +241,9 @@ export async function botTick() {
     //   미뤄도 손해가 없다 — 입장 자격은 세션이 살아 있는 동안 유지된다.
     const bookDeadline = Date.now() + BOOK_BUDGET_MS;
     if (canBook) {
-      const ready = S.fakes.filter(f => f.state === 'admitted');
+      // 아직 "고르는 중"(bookAt 전)인 관객은 이번 틱을 건너뛴다 — 다음 틱에 잡힌다.
+      const now = Date.now();
+      const ready = S.fakes.filter(f => f.state === 'admitted' && (f.bookAt || 0) <= now);
       for (let i = 0; i < ready.length && gen === S.simGen; i += BOOK_CHUNK) {
         if (Date.now() > bookDeadline) break;   // 예산을 넘기면 여기서 끊고 ①을 지킨다
         await Promise.all(ready.slice(i, i + BOOK_CHUNK).map(async f => {
@@ -397,7 +419,9 @@ function slotOptions() {
   const d = new Date();
   d.setSeconds(0, 0);
   d.setMinutes(d.getMinutes() < 30 ? 30 : 60);
-  for (let i = 0; i < 8; i++) {
+  // 30분 슬롯은 가까운 둘만 — 방문자가 머무는 시간 안에 걸 수 있는 시각만 의미가 있다.
+  //   두 시간 뒤 오픈을 걸고 기다릴 방문자는 없고, 목록만 길어진다.
+  for (let i = 0; i < 2; i++) {
     out.push({ label: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')} 오픈`, ms: d.getTime() });
     d.setMinutes(d.getMinutes() + 30);
   }
@@ -499,7 +523,11 @@ export function adoptRoster() {
   const fakes = takeRoster();
   if (!fakes.length) return;
   S.fakes = fakes;
-  S.fakes.forEach(f => S.myRids.add(f.rid));
+  S.fakes.forEach(f => {
+    S.myRids.add(f.rid);
+    // 명단에는 bookAt이 없다(저장 안 함). 입장 상태로 이어받은 관객에게 고르는 시간을 새로 준다.
+    if (f.state === 'admitted') f.bookAt = Date.now() + bookDelay();
+  });
   if (activeFakes().length && !S.simTimer) S.simTimer = setInterval(botTick, TICK_MS);
   feedLog(`이전 화면의 가상 관객 ${S.fakes.length}명을 이어받았습니다`, 'sys');
 }

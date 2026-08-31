@@ -11,11 +11,20 @@ let sessionSec = 60;
 export const sessionSecs = () => sessionSec;
 export const setSessionSec = (v) => { const n = parseInt(v); if (n > 0) sessionSec = n; };
 
-// 한 탭이 동시에 유지할 수 있는 가상 관객 수. 브라우저 생성기의 한계이지 백엔드 정원이 아니다
-// — 동일 오리진 동시연결 6개로 생존 창(30초) 안에 전원을 폴링할 수 있는 규모.
-export const MAX_FAKES = 200;
-export const INJECT_PRESETS = [5, 10, 30, 50, 100, 200];
-export const RUSH_PRESETS = [0, 10, 50, 100, 200];
+// 입장 정원 — 같은 이유로 서버(stats 응답의 capacity)가 정본이다.
+// 대기 화면이 "왜 기다리는지"를 설명하는 데 쓴다. 0은 아직 못 받은 상태.
+let capacityN = 0;
+export const capacity = () => capacityN;
+export const setCapacity = (v) => { const n = parseInt(v); if (n > 0) capacityN = n; };
+
+// 한 탭이 동시에 유지할 수 있는 가상 관객 수. 백엔드 한계가 아니라(부하 실측은 사용자
+//   10,000명까지 여유) 데모 경험의 한계다 — 정원 20·회전 약 1.5명/초에서 100명이면
+//   대기 소진에 약 1분. 그 위는 뒤에 온 방문자가 막힌 줄만 보고, 폴링도 한 바퀴
+//   (100명 ÷ 24청크 × 공개 경로 왕복 0.85초)가 3초 틱을 넘기 시작한다.
+export const MAX_FAKES = 100;
+// 투입·러시가 같은 눈금을 쓴다 — 두 입력이 다른 단위면 같은 인원이 다르게 읽힌다.
+export const INJECT_PRESETS = [10, 30, 50, 100];
+export const RUSH_PRESETS = [0, 10, 30, 50, 100];
 
 export const OPEN_WINDOW_MS = 10 * 60 * 1000;   // 오픈 후 예매 가능 창 = 10분
 const CLOSED_SHOW_MS = 60 * 1000;               // 마감 표시를 유지하는 시간

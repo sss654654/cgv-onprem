@@ -167,6 +167,8 @@ body{
   padding-top:var(--sp-3);border-top:1px solid var(--line-soft);
   display:inline-block;min-width:220px;
 }
+.wait-cap{color:var(--txt-3);font-size:var(--fs-xs);margin-top:var(--sp-2)}
+.wait-cap b{color:var(--txt-2)}
 .wait-total span{color:var(--txt);font-weight:700}
 .wait-hint{color:var(--txt-3);font-size:var(--fs-xs);margin:var(--sp-5) 0 var(--sp-4);line-height:1.6}
 .wait-heart{color:var(--txt-3);font-size:var(--fs-xs);margin-top:6px;min-height:14px;font-variant-numeric:tabular-nums}
@@ -306,6 +308,7 @@ body{
 .board{margin-top:18px}
 .board-head{display:flex;align-items:baseline;gap:10px;margin-bottom:8px}
 .board-sum{font-size:var(--fs-sm);color:var(--txt-3);font-weight:700}
+.board-reset{font-size:var(--fs-xs);color:var(--txt-3);margin-right:auto}
 .board-sum b{font-size:var(--fs-lg);color:var(--txt);font-weight:800;font-variant-numeric:tabular-nums}
 .board-sum b.bump{animation:bump .5s var(--ease)}
 .board-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}

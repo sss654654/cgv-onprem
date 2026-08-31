@@ -5,7 +5,7 @@
 // 화면에서 사라지는데, 그때도 계속 부르면 대기 중인 사용자 한 명이 안 보는 데이터를
 // 3초마다 두 번씩 받아 간다. 대기 인원이 많을수록 그 몫이 그대로 곱해진다.
 
-import { S, $, api, feedLog, onScreen, setSessionSec } from './core.js';
+import { S, $, api, feedLog, onScreen, sessionSecs, setSessionSec, capacity, setCapacity } from './core.js';
 
 const POLL_MS = 3000;
 const STALE_AFTER = 3;   // 연속 실패가 이만큼 쌓이면 화면 값이 낡았다고 표시한다
@@ -33,8 +33,14 @@ export async function loadServerConfig() {
   if (!S.simMovieId) return;
   const { ok, data } = await api(`/api/admission/stats?movieId=${encodeURIComponent(S.simMovieId)}`);
   if (!ok || !data) return;
-  // 세션 수명은 서버가 정한다. 프런트에 상수로 두면 env를 바꿨을 때 화면만 옛 값으로 남는다.
+  // 세션 수명·정원은 서버가 정한다. 프런트에 상수로 두면 env를 바꿨을 때 화면만 옛 값으로 남는다
+  //   — "데모 세션은 60초"가 하드코딩으로 남아 실제(300초)와 어긋났던 전례가 이 함수의 이유다.
   setSessionSec(data.sessionTimeoutSeconds);
+  setCapacity(data.capacity);
+  const secs = String(sessionSecs());
+  ['enterSecs', 'hintSecs'].forEach(id => { const el = $(id); if (el) el.textContent = secs; });
+  const cap = String(capacity() || '–');
+  ['introCap', 'waitCapN'].forEach(id => { const el = $(id); if (el) el.textContent = cap; });
 }
 
 // ================= 좌석 현황판 =================
@@ -42,6 +48,16 @@ export async function loadServerConfig() {
 //   좌석 번호 없이 회차별 잔여/전체만 받는다(/api/screenings/board).
 const boardVisible = () => onScreen('movies');
 let boardPrev = {};
+
+// 데모 데이터 초기화 시각 — reset-app CronJob(08·11·14·17·20·23시 정각, KST)과 같은 값.
+//   서버에 물을 API가 없어 스케줄을 여기 복제한다. 크론을 바꾸면 여기도 바꾼다
+//   (cgv-infra workloads/manifests/reset-app/demo-reset-cronjob.yaml).
+const RESET_HOURS_KST = [8, 11, 14, 17, 20, 23];
+function nextResetLabel() {
+  const h = parseInt(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Seoul', hour: '2-digit', hour12: false }).format(new Date()));
+  const next = RESET_HOURS_KST.find(x => x > h) ?? RESET_HOURS_KST[0];
+  return `${String(next).padStart(2, '0')}:00`;
+}
 export async function pollBoard() {
   if (!S.simMovieId || !boardVisible()) return;
   const box = $('seatBoard'); if (!box) return;
@@ -54,6 +70,9 @@ export async function pollBoard() {
   const remain = data.reduce((a, s) => a + s.remain, 0);
   const sum = $('boardSum');
   if (sum) sum.innerHTML = `좌석 <b id="boardRemain">${remain}</b> / ${total} 남음`;
+  // 좌석이 왜 다시 차는지(초기화)를 숫자 옆에서 설명한다 — 매진을 보고 떠나지 않게.
+  const rs = $('boardReset');
+  if (rs) rs.textContent = `다음 초기화 ${nextResetLabel()}`;
   if (boardPrev.__sum !== undefined && boardPrev.__sum !== remain) {
     const b = $('boardRemain');
     if (b) { b.classList.add('bump'); setTimeout(() => b.classList.remove('bump'), 500); }
