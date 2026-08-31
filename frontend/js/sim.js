@@ -149,9 +149,13 @@ export async function addFakes(n) {
   if (!S.simMovieId) { toast('상영 정보를 먼저 불러오세요.', true); return; }
   n = Math.max(1, Math.min(MAX_FAKES, n || 5));
   const live = activeFakes().length;
-  if (live + n > MAX_FAKES) { toast(`동시 최대 ${MAX_FAKES}명까지입니다 — 지금 ${live}명`, true); return; }
-
   const gs = effectiveGate().s;
+  // 예약 러시는 아직 화면에 없지만 오픈 순간 진입할 예정 인원이다 — 예산에 미리 넣는다.
+  const reserved = gs === 'before' ? openRushN() : 0;
+  if (live + reserved + n > MAX_FAKES) {
+    toast(`동시 최대 ${MAX_FAKES}명까지입니다 — 지금 ${live}명${reserved ? ` + 예약 러시 ${reserved}명` : ''}`, true);
+    return;
+  }
   if (gs === 'before') {
     // 오픈 전에는 줄을 세우지 않는다. 미리 넣은 관객이 앞자리를 차지하면 오픈 시각에 들어오는
     // 사람이 이미 뒤처진 채로 시작한다. 대기실에 모아 두었다가 오픈 순간에 함께 내보낸다.
@@ -172,8 +176,14 @@ async function releaseLobby(rushN) {
   if (addFakes._busy) return;
   const lobby = lobbyFakes();
   // 러시 인원은 전체 활성 기준으로 자른다 — 대기실만 빼고 계산하면 기존 대기자와 합쳐 상한을 넘는다.
+  // 투입 시점에 예약분까지 예산 검사를 하므로 보통 여기서 잘릴 일이 없다.
+  //   그래도 잘리는 경우(두 창 병행 등)는 조용히 줄이지 않고 실황에 남긴다.
   const room = Math.max(0, MAX_FAKES - activeFakes().length);
-  const rush = createFakes(Math.min(rushN || 0, room), 'waiting');
+  const wantRush = rushN || 0;
+  const rush = createFakes(Math.min(wantRush, room), 'waiting');
+  if (rush.length < wantRush) {
+    feedLog(`동시 상한 ${MAX_FAKES}명 — 러시 ${wantRush}명 중 ${rush.length}명만 줄을 섭니다`, 'sys');
+  }
   if (!lobby.length && !rush.length) return;
   addFakes._busy = true;
   try { await enterFakes([...lobby, ...rush], '오픈 러시'); }
@@ -355,7 +365,7 @@ export function renderGate() {
     box.classList.add('live');
     subText = `● 예매 진행 중 · 마감까지 ${fmtHMS(st.remain)}`;
   } else if (st.s === 'closed') subText = '오픈 마감됨';
-  // 예약이 없는 상태에도 문구를 준다. 비워 두면 [지금 열기]로 게이트를 푼 순간 —
+  // 예약이 없는 상태에도 문구를 준다. 비워 두면 [해제]로 게이트를 푼 순간 —
   //   대기를 건너뛰려는 사람이 가장 확인을 원하는 그때 — 표시가 사라져 뭔가 꺼진 것처럼 보인다.
   else subText = '● 상시 예매 가능 — 오픈 예약 없음';
   if (sub) sub.textContent = subText;
@@ -382,7 +392,10 @@ export function fireGateEvents() {
       const rush = openRushN();
       const lobbyN = lobbyFakes().length;
       const fresh = isRushFresh();   // 오픈 한참 뒤에 발견한 예약은 투입을 생략한다
-      histPush(at, fresh ? rush + lobbyN : 0);   // 기록은 실제 발동 기준이다
+      // 이력에는 실제로 진입하는 수를 적는다. 요청값을 적으면 상한에 잘렸을 때
+      //   화면 숫자와 이력이 어긋난다(2026-08-31 — "160명 러시"로 기록된 실제 100명 진입).
+      const actualRush = Math.min(rush, Math.max(0, MAX_FAKES - activeFakes().length));
+      histPush(at, fresh ? actualRush + lobbyN : 0);
       if (fresh && (rush > 0 || lobbyN > 0)) {
         feedLog(`오픈 — 대기실 ${lobbyN}명과 러시 ${rush}명이 동시에 줄을 섭니다`, 'sys');
         // 즉시 투입이 돌고 있으면 잠시 물러섰다 다시 시도한다 — 러시가 조용히 사라지지 않게.
@@ -470,7 +483,7 @@ export function initConsole() {
   }
 
   // 첫 방문 기본값 — 1분 뒤 오픈 + 50명 러시. 방문자가 머무는 동안 오픈이 실제로 발동해
-  // 대기열이 도는 장면까지 이어진다. 기다리지 않으려면 카드의 [지금 열기]로 바로 풀 수 있다.
+  // 대기열이 도는 장면까지 이어진다. 기다리지 않으려면 콘솔의 [해제]로 풀 수 있다.
   if (!openAtMs() && !store.get(K.OPEN_SEEDED)) {
     store.set(K.OPEN_SEEDED, '1');
     store.set(K.OPEN_AT, String(slotOptions()[0].ms));
