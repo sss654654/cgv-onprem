@@ -4,13 +4,23 @@ import com.cgv.booking.redis.AdmittedService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanBuilder;
+import io.opentelemetry.api.trace.SpanContext;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.TraceFlags;
+import io.opentelemetry.api.trace.TraceState;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.api.trace.TracerProvider;
+import io.opentelemetry.context.Scope;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.kafka.support.KafkaHeaders;
-import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -19,18 +29,27 @@ import java.util.concurrent.TimeUnit;
 // admissions 소비(queue→booking): "u3 입장했다" → 입장 인증 발급.
 // GroupID=booking — 브로커가 이 그룹 offset 기억(죽어도 이어읽기).
 // at-least-once라 중복 가능 → 인증 발급은 멱등이라 무해.
+// final — 생성자에서 예외가 나가면 부분 초기화된 객체가 남는다(SpotBugs CT_CONSTRUCTOR_THROW).
+// 상속을 막으면 그 객체를 붙잡을 방법이 없어진다. @KafkaListener 는 프록시가 필요 없어
+// 클래스를 final 로 둬도 스프링 쪽 동작은 그대로다.
 @Component
-public class AdmissionConsumer {
+public final class AdmissionConsumer {
     private static final Logger log = LoggerFactory.getLogger(AdmissionConsumer.class);
+    private static final String TRACEPARENT = "traceparent";
+
     private final AdmittedService admitted;
     private final ObjectMapper mapper;
     private final MeterRegistry meterRegistry;
     private final Timer lag;
+    private final Tracer tracer;
 
-    public AdmissionConsumer(AdmittedService admitted, ObjectMapper mapper, MeterRegistry meterRegistry) {
+    public AdmissionConsumer(AdmittedService admitted, ObjectMapper mapper, MeterRegistry meterRegistry,
+                             ObjectProvider<Tracer> tracerProvider) {
         this.admitted = admitted;
         this.mapper = mapper;
         this.meterRegistry = meterRegistry;
+        // 트레이서가 없으면 no-op 으로 떨어진다 — 계측 배선이 빠져도 소비는 계속돼야 한다.
+        this.tracer = tracerProvider.getIfAvailable(() -> TracerProvider.noop().get("booking-admissions"));
         // booking_admission_lag_seconds — queue가 승격을 발행한 시각부터 여기서 인증이 생긴 시각까지.
         // 이 값이 있어야 "정원 30인데 실제 동시 예매가 20"의 원인에서 전달 지연을 지울 수 있다.
         // 두 서비스의 발행/소비 건수는 각각 지표로 나오지만, 한 건이 건너오는 데 걸린 시간은
@@ -81,15 +100,67 @@ public class AdmissionConsumer {
     //   음수가 나오는데, 그건 지연이 아니라 잡음이라 버린다.
     // 지연은 addAll이 돌아온 뒤에 잰다 — "이 사용자가 좌석 선택을 통과할 수 있게 된 시점"까지가
     //   재려는 구간이라, 배치의 모든 레코드가 같은 완료 시각을 쓴다.
+    // 스팬을 직접 연다. Spring Kafka 의 리스너 관측(spring.kafka.listener.observation-enabled)은
+    //   레코드 리스너에만 붙고 배치 리스너는 지나간다 — 그래서 이 메서드 안에서 기록하는
+    //   booking_admission_lag_seconds 와 booking_admissions_total 에 trace_id 가 없었다.
+    //   같은 서비스의 레코드 리스너(AdmissionExpiryConsumer)가 세는
+    //   booking_admission_revoked_total 에는 exemplar 가 붙는데 이 둘만 안 붙던 이유다.
+    //   exemplar 가 없으면 그래프의 봉우리에서 트레이스로 넘어갈 수 없고, 인증 지연이
+    //   "파티션에서 기다린 시간"인지 "처리에 쓴 시간"인지 지표만으로는 안 갈린다.
+    // 링크로 잇는 이유: 배치 한 번에 서로 다른 트레이스의 레코드가 섞여 들어온다.
+    //   부모는 하나뿐이라 배치에는 맞지 않고, 링크는 여러 개를 걸 수 있다.
+    //   발행 측(queue)이 traceparent 를 헤더에 실어 보내므로 승격 → 발행 → 소비가 이어진다.
     @KafkaListener(topics = "admissions", containerFactory = "batchKafkaListenerContainerFactory")
     // groupId는 application.yml(consumer.group-id: booking) 단일 소스
-    public void onAdmissions(List<String> messages,
-                             @Header(KafkaHeaders.RECEIVED_TIMESTAMP) List<Long> publishedAts) {
-        List<AdmittedService.Admission> valid = new ArrayList<>(messages.size());
-        List<Long> validPublishedAts = new ArrayList<>(messages.size());
+    public void onAdmissions(List<ConsumerRecord<String, String>> records) {
+        SpanBuilder builder = tracer.spanBuilder("admissions consume")
+                .setSpanKind(SpanKind.CONSUMER)
+                .setAttribute("messaging.system", "kafka")
+                .setAttribute("messaging.destination.name", "admissions")
+                .setAttribute("messaging.batch.message_count", records.size());
+        for (ConsumerRecord<String, String> record : records) {
+            SpanContext publisher = publisherContext(record);
+            if (publisher != null) {
+                builder.addLink(publisher);
+            }
+        }
+        Span span = builder.startSpan();
+        try (Scope ignored = span.makeCurrent()) {
+            consume(records);
+        } catch (RuntimeException ex) {
+            span.recordException(ex);
+            throw ex;
+        } finally {
+            span.end();
+        }
+    }
 
-        for (int i = 0; i < messages.size(); i++) {
-            String message = messages.get(i);
+    // 헤더의 W3C traceparent(00-<트레이스 32자>-<스팬 16자>-<플래그 2자>)를 링크용 컨텍스트로.
+    // 형식이 어긋나거나 헤더가 없으면 null — 계측 때문에 소비가 실패하지 않게 한다.
+    private static SpanContext publisherContext(ConsumerRecord<String, String> record) {
+        org.apache.kafka.common.header.Header header = record.headers().lastHeader(TRACEPARENT);
+        if (header == null || header.value() == null) {
+            return null;
+        }
+        String[] parts = new String(header.value(), StandardCharsets.UTF_8).split("-");
+        if (parts.length < 4 || parts[1].length() != 32 || parts[2].length() != 16) {
+            return null;
+        }
+        try {
+            SpanContext context = SpanContext.createFromRemoteParent(
+                    parts[1], parts[2], TraceFlags.fromHex(parts[3], 0), TraceState.getDefault());
+            return context.isValid() ? context : null;
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private void consume(List<ConsumerRecord<String, String>> records) {
+        List<AdmittedService.Admission> valid = new ArrayList<>(records.size());
+        List<Long> validPublishedAts = new ArrayList<>(records.size());
+
+        for (ConsumerRecord<String, String> record : records) {
+            String message = record.value();
             QueueEvent e;
             try {
                 e = mapper.readValue(message, QueueEvent.class);
@@ -104,7 +175,7 @@ public class AdmissionConsumer {
                 continue;
             }
             valid.add(new AdmittedService.Admission(e.movieId(), e.requestId()));
-            validPublishedAts.add(publishedAts.get(i));
+            validPublishedAts.add(record.timestamp());
         }
 
         if (!valid.isEmpty()) {
@@ -120,6 +191,6 @@ public class AdmissionConsumer {
             }
         }
         // 건별 info 로그는 두지 않는다 — 오픈 순간 초당 수백 줄이 되고, 건별 내용은 트레이스에 있다.
-        log.info("입장 인증 추가: batch={} skipped={}", valid.size(), messages.size() - valid.size());
+        log.info("입장 인증 추가: batch={} skipped={}", valid.size(), records.size() - valid.size());
     }
 }
