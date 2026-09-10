@@ -18,12 +18,12 @@ workflow:
     # 브랜치 push 인데 그 브랜치에 열린 MR 이 있으면 만들지 않는다. 위에서 이미 만들었다.
     - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
       when: never
-    # 브랜치 파이프라인은 dev(머지 결과)만. 일반 브랜치를 넣지 않는 이유 —
+    # 브랜치 파이프라인은 trunk(머지 결과)만. 일반 브랜치를 넣지 않는 이유 —
     # push 뒤에 MR 을 만들면 push 사건(브랜치)과 MR 생성 사건이 각각 파이프라인을 만들어
     # 같은 커밋이 두 번 돈다. 위의 차단은 "push 시점에 MR 이 이미 열린" 경우만 걸러서,
-    # 순서가 반대면 못 막는다. 브랜치 쪽을 dev 로 좁히면 순서와 무관하게 하나다.
+    # 순서가 반대면 못 막는다. 브랜치 쪽을 trunk 로 좁히면 순서와 무관하게 하나다.
     # 대가: 일반 브랜치는 MR 을 열어야 CI 가 돈다.
-    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_COMMIT_BRANCH == "main"
 
 # build 가 만든 이미지는 job 컨테이너가 아니라 데스크탑 데몬에 남는다. 그래서
 # scan 과 publish 가 다른 job 인데도 같은 이름($SVC:$TAG)으로 그 이미지를 이어받는다.
@@ -48,7 +48,9 @@ default:
 
 variables:
   # 같은 이름을 다시 쓰지 않아 노드의 이미지 캐시가 애초에 맞지 않는다.
-  # 번호로 순서를 읽고 해시로 어느 커밋인지 찾는다. 예: dev-42-a1b2c3d
+  # 번호로 순서를 읽고 해시로 어느 커밋인지 찾는다. 예: main-42-a1b2c3d
+  # ★ 이 태그는 GitLab 레지스트리 전용이다. 브랜치 이름이 들어 있어 환경을 옮기면 맞지 않는다.
+  #   ECR 로 갈 때는 커밋 해시만 쓴다(.publish-ecr) — 그래야 stg·prd 가 같은 이름을 쓸 수 있다.
   TAG: $CI_COMMIT_REF_SLUG-$CI_PIPELINE_IID-$CI_COMMIT_SHORT_SHA
 
   # stg(EKS)가 이미지를 받아오는 곳. EKS 노드는 VPC 안이라 192.168.0.167 에 닿을 길이 없어서
@@ -59,15 +61,18 @@ variables:
 
 # ═══════════════════════════════════════════════ job
 #
-#   check     secret-scan · dep-scan:queue-go · lint:{queue-go,booking}   서로 독립이라 같은 stage
+#   check     secret-scan · dep-scan:queue-go · lint:{queue-go,booking,frontend}   서로 독립이라 같은 stage
 #     ↓
-#   test      (비어 있다)                              11부에서 채운다
+#   test      test:{queue-go,booking}                 queue-go 는 실제 Redis 를 붙인다
 #     ↓
 #   build     build:{queue-go,booking,frontend}       바뀐 서비스만 생긴다
 #     ↓
 #   scan      scan:{...}                              build 가 만든 이미지를 훑는다
 #     ↓
-#   publish   publish:{...}                           dev 브랜치에서만 생긴다
+#   publish   publish:{...}                           main 브랜치에서만.  GitLab 레지스트리로
+#             publish-ecr:{...}                       ★ 수동.  버튼을 눌러야 ECR 로 간다
+#     ↓
+#   cleanup   prune:local                             이 판이 로컬 데몬에 남긴 것을 정리
 
 # ── check ─────────────────────────────────────────────
 # 커밋에 자격이 섞여 들어갔는지 훑는다. 한 번 들어가면 지워도 히스토리에 남아
@@ -224,7 +229,7 @@ publish:queue-go:
   variables:
     SVC: queue-go
   rules:
-    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_COMMIT_BRANCH == "main"
       changes:
         - queue-go/**/*
         - .gitlab-ci.yml
@@ -252,7 +257,7 @@ publish:booking:
   variables:
     SVC: booking
   rules:
-    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_COMMIT_BRANCH == "main"
       changes:
         - booking/**/*
         - .gitlab-ci.yml
@@ -280,7 +285,7 @@ publish:frontend:
   variables:
     SVC: frontend
   rules:
-    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_COMMIT_BRANCH == "main"
       changes:
         - frontend/**/*
         - .gitlab-ci.yml
@@ -290,7 +295,11 @@ publish-ecr:queue-go:
   variables:
     SVC: queue-go
   rules:
-    - if: $CI_COMMIT_BRANCH == "dev" && $STG_ACTIVE == "true"
+    - if: $CI_COMMIT_BRANCH == "main"
+      # 수동. 이 버튼을 누르는 것이 "이 이미지를 클라우드로 보낸다" 는 결정이다.
+      # allow_failure: true — 안 누르면 파이프라인이 blocked 가 아니라 통과로 끝난다.
+      when: manual
+      allow_failure: true
       changes:
         - queue-go/**/*
         - .gitlab-ci.yml
@@ -300,7 +309,11 @@ publish-ecr:booking:
   variables:
     SVC: booking
   rules:
-    - if: $CI_COMMIT_BRANCH == "dev" && $STG_ACTIVE == "true"
+    - if: $CI_COMMIT_BRANCH == "main"
+      # 수동. 이 버튼을 누르는 것이 "이 이미지를 클라우드로 보낸다" 는 결정이다.
+      # allow_failure: true — 안 누르면 파이프라인이 blocked 가 아니라 통과로 끝난다.
+      when: manual
+      allow_failure: true
       changes:
         - booking/**/*
         - .gitlab-ci.yml
@@ -310,7 +323,11 @@ publish-ecr:frontend:
   variables:
     SVC: frontend
   rules:
-    - if: $CI_COMMIT_BRANCH == "dev" && $STG_ACTIVE == "true"
+    - if: $CI_COMMIT_BRANCH == "main"
+      # 수동. 이 버튼을 누르는 것이 "이 이미지를 클라우드로 보낸다" 는 결정이다.
+      # allow_failure: true — 안 누르면 파이프라인이 blocked 가 아니라 통과로 끝난다.
+      when: manual
+      allow_failure: true
       changes:
         - frontend/**/*
         - .gitlab-ci.yml
@@ -372,13 +389,18 @@ publish-ecr:frontend:
   script:
     - docker push "$CI_REGISTRY_IMAGE/$SVC:$TAG"
 
-# stg 를 켠 날만 돈다. 평소에는 EKS 가 없어 올려 둬도 받을 곳이 없고, ECR 에 쌓이기만 한다.
-#   CI 변수 STG_ACTIVE 를 true 로 두면 아래 세 job 이 생긴다.
-# ★ dev 브랜치에서만 돈다. 자격이 Protected 변수라 MR 파이프라인에서는 값이 비어 있다.
+# ★ 승격 게이트다. 버튼을 누르는 것이 "이 이미지를 클라우드로 보낸다" 는 결정이고,
+#   그 뒤는 클라우드 쪽 image-updater 가 받아 배포까지 간다.
+# ★ main 브랜치에서만 생긴다. 자격이 Protected 변수라 MR 파이프라인에서는 값이 비어 있다.
 #
 # 다시 빌드하지 않는다. 러너가 호스트 도커 소켓을 써서 build 가 만든 이미지가 같은 데몬에 그대로 있다
-#   — 태그만 하나 더 달아 다른 레지스트리로 민다. 그래서 두 곳의 같은 태그가 같은 이미지다.
+#   — 이름만 하나 더 달아 다른 레지스트리로 민다. 그래서 두 곳의 이미지가 바이트까지 같다.
 #   브랜치마다 새로 빌드하면 stg 부하에서 문제가 났을 때 "코드 때문인가 이미지가 달라서인가" 가 낀다.
+#
+# ⚠ 이 job 은 같은 판의 build:<서비스> 가 돌았어야 성립한다. 데몬에 그 이미지가 있어야
+#   태그를 더 달 수 있어서다. 그래서 changes 규칙을 build 와 같게 둔다.
+#   서비스 셋을 한꺼번에 올려야 하는 판(환경을 처음 켜는 날)에는 .gitlab-ci.yml 을 건드린
+#   커밋으로 판을 돌린다 — 그 경로가 세 서비스의 changes 목록에 다 들어 있다.
 .publish-ecr:
   stage: publish
   image: docker:27-cli
@@ -398,8 +420,12 @@ publish-ecr:frontend:
     - apk add --no-cache aws-cli
     - aws ecr get-login-password | docker login -u AWS --password-stdin "$ECR_REGISTRY"
   script:
-    - docker tag "$CI_REGISTRY_IMAGE/$SVC:$TAG" "$ECR_REGISTRY/$ECR_PATH/$SVC:$TAG"
-    - docker push "$ECR_REGISTRY/$ECR_PATH/$SVC:$TAG"
+    # ★ ECR 쪽 이름에는 브랜치가 안 들어간다. 커밋 해시 하나다.
+    #   $TAG 는 브랜치 이름을 담고 있어서(main-42-a1b2c3d) 환경을 옮기면 이름이 맞지 않는다.
+    #   같은 이미지를 stg 도 prd 도 같은 이름으로 부르려면 환경과 무관한 이름이어야 한다.
+    #   해시는 $TAG 의 마지막 조각과 같아서, 두 레지스트리의 어느 것이 짝인지 눈으로 찾힌다.
+    - docker tag "$CI_REGISTRY_IMAGE/$SVC:$TAG" "$ECR_REGISTRY/$ECR_PATH/$SVC:$CI_COMMIT_SHORT_SHA"
+    - docker push "$ECR_REGISTRY/$ECR_PATH/$SVC:$CI_COMMIT_SHORT_SHA"
 
 # ── cleanup ───────────────────────────────────────────
 # TAG 가 <브랜치>-<파이프라인>-<커밋해시>라 같은 이름을 다시 쓰지 않는다. 롤백을 태그 한 줄로
