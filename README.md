@@ -76,6 +76,8 @@ KBO 야구의 온라인 예매가 폭주해 예매 서버가 수요를 받아내
 | booking | Java/Spring | 좌석·결제·확정 | [booking/README.md](booking/README.md) |
 | frontend | 바닐라 JS + nginx | SPA + 게이트웨이 | [frontend/README.md](frontend/README.md) |
 
+브랜치를 어떻게 나누고 이미지가 어느 환경으로 가는지는 [docs/브랜치-전략.md](docs/브랜치-전략.md)에 있다.
+
 ---
 
 ## 왜 나눴나
@@ -183,6 +185,9 @@ cgv-onprem/
 ├── queue-go/            입장 통제 서비스 (Go)
 ├── booking/             예매 서비스 (Java/Spring)
 ├── frontend/            SPA + nginx 게이트웨이
+├── docs/                브랜치 전략
+├── .gitlab/             머지 요청 템플릿
+├── .gitlab-ci.yml       파이프라인 6단
 ├── docker-compose.yml   로컬 풀스택 정의
 ├── e2e2.sh              게이트웨이 통과 E2E 스크립트
 └── .gitignore
