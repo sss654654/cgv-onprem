@@ -19,13 +19,26 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # 보안 헤더 — 프록시가 아니라 앱이 낸다.
+    # k3s 에서는 Traefik Middleware(app-security-headers)가 이 Ingress 의 라우터 전부에 걸었다.
+    #   EKS 에서는 ALB 가 임의 헤더를 못 붙여서 프록시가 그 일을 못 한다.
+    #   앱이 내면 앞에 무엇이 있든 응답이 같아진다.
+    # HSTS 는 HTTP 응답에 실리면 브라우저가 무시한다 — 도메인·인증서를 안 쓰는 stg 에서는 무의미하고
+    #   TLS 를 끝내는 앞단이 있는 dev 에서만 뜻이 있다. 해가 없어 양쪽에 같은 줄로 둔다.
+    add_header Strict-Transport-Security "max-age=3600" always;
+    add_header X-Content-Type-Options    "nosniff"      always;
+    add_header X-Frame-Options           "DENY"         always;
+
     # 업스트림 주소는 변수로 둔다 — proxy_pass 에 변수가 있으면 nginx 가 이름을
     #   기동 시점이 아니라 요청 시점에 푼다. 리터럴이면 기동 때 한 번만 푸는데,
     #   그 순간 클러스터 DNS(CoreDNS)가 아직 없으면 기동 자체를 거부한다
     #   → 클러스터 전체가 재부팅될 때마다 CoreDNS 가 뜰 때까지 반복 재시작.
     # 요청 시점 해석은 /etc/resolv.conf 를 안 쓴다 → resolver 로 DNS 를 직접 지정.
     #   search 목록도 안 타므로 서비스 이름은 FQDN 으로 쓴다.
-    resolver 10.43.0.10 valid=30s ipv6=off;   # k3s 클러스터 DNS. 30초 캐시로 매 요청 조회를 피한다
+    # 주소가 환경마다 다르다. 이미지에 리터럴로 두면 그 이미지가 한 환경에서만 돈다 —
+    #   이 파일이 .template 인 이유이고, 컨테이너가 뜰 때 엔트리포인트가 이 값을 채운다.
+    #   k3s 10.43.0.10 · EKS 172.20.0.10 · docker compose 127.0.0.11(도커 내장 DNS)
+    resolver ${DNS_RESOLVER} valid=30s ipv6=off;   # 30초 캐시로 매 요청 조회를 피한다
     set $queue   http://queue.app.svc.cluster.local:8090;
     set $booking http://booking.app.svc.cluster.local:8091;
 
@@ -45,7 +58,13 @@ server {
         proxy_cache_lock_timeout 5s;
         proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
         # booking 이 죽어도 낡은 목록으로 화면이 뜬다 — 대기열은 계속 돈다
+        # ★ nginx 의 add_header 는 "이 층에 add_header 가 하나도 없을 때만" 윗층 것을 물려받는다.
+        #   아래 한 줄 때문에 server 층의 보안 헤더 셋이 이 location 에서 통째로 사라진다.
+        #   그래서 여기서 다시 적는다. 지우면 조용히 헤더가 빠진다.
         add_header X-Cache-Status $upstream_cache_status;   # HIT/MISS 확인용
+        add_header Strict-Transport-Security "max-age=3600" always;
+        add_header X-Content-Type-Options    "nosniff"      always;
+        add_header X-Frame-Options           "DENY"         always;
     }
 
     # booking(예매): screenings·seats·bookings
@@ -57,7 +76,12 @@ server {
     # no-cache: 파일명에 해시가 없어 캐시버스팅 수단이 없음 → 재배포 시 구버전이 보이는 것 방지.
     # 데모 규모라 매 요청 재검증 비용 무시 가능. (조건부 요청이라 304로 싸게 끝남.)
     location / {
+        # 위 /api/movies 와 같은 이유로 보안 헤더를 다시 적는다 — 이 층에 add_header 가 있으면
+        #   server 층 것을 안 물려받는다. 첫 화면이 나가는 자리라 빠지면 가장 크게 걸린다.
         add_header Cache-Control "no-cache";
+        add_header Strict-Transport-Security "max-age=3600" always;
+        add_header X-Content-Type-Options    "nosniff"      always;
+        add_header X-Frame-Options           "DENY"         always;
         try_files $uri $uri/ /index.html;
     }
 }

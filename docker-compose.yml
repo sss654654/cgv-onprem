@@ -90,6 +90,11 @@ services:
   frontend:
     build: ./frontend
     restart: unless-stopped
+    environment:
+      # nginx 설정의 resolver 에 채워진다. 도커 내장 DNS 주소이고, 이 값이라야
+      #   compose 안에서 queue·booking 이름이 풀린다.
+      #   클러스터에서는 CoreDNS 주소가 들어간다(k3s 10.43.0.10 · EKS 172.20.0.10).
+      DNS_RESOLVER: "127.0.0.11"
     ports:
       - "8088:8080"   # 브라우저: http://localhost:8088 (nginx-unprivileged 8080)
     depends_on:

@@ -15,7 +15,12 @@ USER root
 RUN apk --no-cache upgrade
 USER 101
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# 설정을 템플릿으로 넣는다. 기반 이미지의 엔트리포인트가 뜰 때 /etc/nginx/templates/*.template 을
+#   읽어 환경변수를 채우고 그 결과를 /etc/nginx/conf.d/ 에 쓴다.
+#   resolver 주소가 환경마다 달라서(k3s·EKS·compose) 이미지에 리터럴로 둘 수 없다.
+# ★ 렌더 결과가 /etc/nginx/conf.d/ 에 쓰이는데 그 경로는 readOnlyRootFilesystem 아래다.
+#   배포 쪽에서 그 경로에 쓰기 가능한 볼륨을 붙여야 기동한다(cgv-infra 의 frontend 차트 값).
+COPY default.conf.template /etc/nginx/templates/default.conf.template
 COPY index.html style.css og.png /usr/share/nginx/html/
 COPY js/ /usr/share/nginx/html/js/
 EXPOSE 8080

@@ -50,6 +50,12 @@ variables:
   # 번호로 순서를 읽고 해시로 어느 커밋인지 찾는다. 예: dev-42-a1b2c3d
   TAG: $CI_COMMIT_REF_SLUG-$CI_PIPELINE_IID-$CI_COMMIT_SHORT_SHA
 
+  # stg(EKS)가 이미지를 받아오는 곳. EKS 노드는 VPC 안이라 192.168.0.167 에 닿을 길이 없어서
+  #   GitLab 레지스트리를 못 쓴다 — ECR 은 고르는 것이 아니라 구조가 요구하는 것이다.
+  # 뒤 경로를 GitLab 과 같게 둔다. 같은 태그를 두 곳에 올릴 때 앞의 주소만 달라진다.
+  ECR_REGISTRY: 527170477076.dkr.ecr.ap-northeast-2.amazonaws.com
+  ECR_PATH: cgv/cgv-onprem
+
 # ═══════════════════════════════════════════════ job
 #
 #   check     secret-scan · dep-scan:queue-go · lint:{queue-go,booking}   서로 독립이라 같은 stage
@@ -262,6 +268,36 @@ publish:frontend:
         - frontend/**/*
         - .gitlab-ci.yml
 
+publish-ecr:queue-go:
+  extends: .publish-ecr
+  variables:
+    SVC: queue-go
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev" && $STG_ACTIVE == "true"
+      changes:
+        - queue-go/**/*
+        - .gitlab-ci.yml
+
+publish-ecr:booking:
+  extends: .publish-ecr
+  variables:
+    SVC: booking
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev" && $STG_ACTIVE == "true"
+      changes:
+        - booking/**/*
+        - .gitlab-ci.yml
+
+publish-ecr:frontend:
+  extends: .publish-ecr
+  variables:
+    SVC: frontend
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev" && $STG_ACTIVE == "true"
+      changes:
+        - frontend/**/*
+        - .gitlab-ci.yml
+
 # ═══════════════════════════════════════════════ 틀
 # 점으로 시작하면 job 이 아니다. 실행되지 않고 extends 로 가져다 쓰기만 한다.
 
@@ -314,3 +350,32 @@ publish:frontend:
   # CI_REGISTRY_IMAGE = <레지스트리 주소>/<그룹>/<프로젝트>. GitLab 이 채운다.
   script:
     - docker push "$CI_REGISTRY_IMAGE/$SVC:$TAG"
+
+# stg 를 켠 날만 돈다. 평소에는 EKS 가 없어 올려 둬도 받을 곳이 없고, ECR 에 쌓이기만 한다.
+#   CI 변수 STG_ACTIVE 를 true 로 두면 아래 세 job 이 생긴다.
+# ★ dev 브랜치에서만 돈다. 자격이 Protected 변수라 MR 파이프라인에서는 값이 비어 있다.
+#
+# 다시 빌드하지 않는다. 러너가 호스트 도커 소켓을 써서 build 가 만든 이미지가 같은 데몬에 그대로 있다
+#   — 태그만 하나 더 달아 다른 레지스트리로 민다. 그래서 두 곳의 같은 태그가 같은 이미지다.
+#   브랜치마다 새로 빌드하면 stg 부하에서 문제가 났을 때 "코드 때문인가 이미지가 달라서인가" 가 낀다.
+.publish-ecr:
+  stage: publish
+  image: docker:27-cli
+  dependencies: []
+  interruptible: false
+  variables:
+    # AWS CLI 가 찾는 이름이 이 둘이다. 프로젝트 변수를 ECR_ 로 시작하게 만든 이유가 여기 있다 —
+    #   AWS_ 로 두면 check·test·build·scan 까지 모든 job 이 AWS 자격을 갖는다.
+    #   이 job 안에서만 그 이름으로 옮겨 쓰면 범위가 여기 하나로 좁혀진다.
+    AWS_ACCESS_KEY_ID: $ECR_AWS_ACCESS_KEY_ID
+    AWS_SECRET_ACCESS_KEY: $ECR_AWS_SECRET_ACCESS_KEY
+    AWS_DEFAULT_REGION: ap-northeast-2
+  before_script:
+    # docker:27-cli 는 alpine 이고 AWS CLI 가 없다. ECR 로그인은 12시간짜리 토큰을 받아야 되는데
+    #   그 토큰을 받는 것이 AWS API 호출이라 서명이 필요하다.
+    # ★ job 마다 내려받아서 그만큼 느려진다. 자주 쓰게 되면 둘이 든 이미지를 따로 구워 고정한다.
+    - apk add --no-cache aws-cli
+    - aws ecr get-login-password | docker login -u AWS --password-stdin "$ECR_REGISTRY"
+  script:
+    - docker tag "$CI_REGISTRY_IMAGE/$SVC:$TAG" "$ECR_REGISTRY/$ECR_PATH/$SVC:$TAG"
+    - docker push "$ECR_REGISTRY/$ECR_PATH/$SVC:$TAG"
