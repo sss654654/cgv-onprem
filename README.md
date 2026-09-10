@@ -123,7 +123,7 @@ docker compose up --build -d      # redis · mysql · kafka · queue · booking 
 
 ## 현재 상태
 
-- **k3s dev 클러스터에서 운영 중**: push → GitLab CI 5단 게이트(check·test·build·scan·publish) → 불변 태그(`dev-<파이프라인>-<커밋>`) 이미지 → argocd-image-updater가 태그를 GitOps 저장소에 write-back → Argo CD 롤아웃. 배포 선언·클러스터 구성은 [cgv-infra](https://github.com/sss654654/cgv-infra)에 있다.
+- **k3s dev 클러스터에서 운영 중**: main 머지 → GitLab CI 6단(check·test·build·scan·publish·cleanup) → 불변 태그(`main-<파이프라인>-<커밋>`) 이미지 → argocd-image-updater가 태그를 GitOps 저장소에 write-back → Argo CD 롤아웃. 배포 선언·클러스터 구성은 [cgv-infra](https://github.com/sss654654/cgv-infra)에 있다.
 - **관측**: metric·log·trace 세 축이 세 서비스에 계측돼 있고, 클러스터의 LGTM 스택(Mimir·Loki·Tempo + Alloy·Grafana)으로 흐른다. 로컬 compose에는 수집 스택이 없어 exporter가 조용히 쉰다.
 - **세 축이 서로 이어져 있다**
 
