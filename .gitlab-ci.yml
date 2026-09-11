@@ -418,6 +418,9 @@ publish-ecr:frontend:
     #   그 토큰을 받는 것이 AWS API 호출이라 서명이 필요하다.
     # ★ job 마다 내려받아서 그만큼 느려진다. 자주 쓰게 되면 둘이 든 이미지를 따로 구워 고정한다.
     - apk add --no-cache aws-cli
+    # 되받는 쪽(GitLab 레지스트리)에도 로그인한다. 레지스트리가 익명 pull 을 거부하고(401),
+    #   job 컨테이너는 판마다 새로 떠서 publish 가 한 로그인이 여기까지 안 온다.
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     - aws ecr get-login-password | docker login -u AWS --password-stdin "$ECR_REGISTRY"
   script:
     # ★ ECR 쪽 이름에는 브랜치가 안 들어간다. 커밋 해시 하나다.
