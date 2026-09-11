@@ -64,7 +64,9 @@ public class ScreeningService {
     //   죽어 있던 동안 traefik 이 초당 최대 467건의 5xx 를 돌려줬다.
     //
     // single-flight: 만료를 본 요청 중 하나만 계산하고(compareAndSet), 나머지는 직전 값을
-    //   즉시 받는다. 로비 인원이 몇이든 compute 는 movie 당 동시에 1개다.
+    //   즉시 받는다. 이 플래그는 JVM 안의 상태라 보장 범위는 파드 하나다 — 로비 인원이 몇이든
+    //   compute 는 파드마다 movie 당 동시에 1개이고, 파드가 N 대면 클러스터 전체로 최대 N 개다.
+    //   커넥션 풀도 파드마다 따로라(DB_POOL_SIZE) 폭주 규모가 사람 수가 아니라 파드 수에 묶인다.
     //   직전 값이 아예 없는 경우(기동 직후 첫 요청들이 겹칠 때)만 각자 계산한다 — 그 창은
     //   기동 후 1초뿐이라 폭주가 못 된다.
     private static final long BOARD_TTL_MS = 1000;
