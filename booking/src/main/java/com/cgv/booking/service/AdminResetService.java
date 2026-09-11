@@ -3,7 +3,6 @@ package com.cgv.booking.service;
 import com.cgv.booking.config.CgvProps;
 import com.cgv.booking.domain.Movie;
 import com.cgv.booking.domain.Screening;
-import com.cgv.booking.init.DataSeeder;
 import com.cgv.booking.repo.BookingRepository;
 import com.cgv.booking.repo.BookingSeatRepository;
 import com.cgv.booking.repo.MovieRepository;
@@ -27,8 +26,8 @@ import java.util.Set;
 // 필요한 이유: 예매는 영구 기록이라 좌석 4,000석이 한 번 팔리면 돌아오지 않는다.
 // 가상 관객이 자동 예매를 돌수록 재고가 줄고, 바닥나면 모든 회차가 매진이라 데모가 멈춘다.
 //
-// 좌석·회차·영화 자체는 지우지 않는다 — 시드는 movies.count()==0일 때만 도는 1회성이라,
-// 지우면 재시드 없이는 빈 화면이 된다. 지우는 것은 "쌓인 것"뿐이다.
+// 좌석·회차·영화 자체는 지우지 않는다 — 시드는 Flyway 마이그레이션(V2)이 DB 마다 한 번만 넣으므로,
+// 지우면 다시 넣을 방법이 없어 빈 화면이 된다. 지우는 것은 "쌓인 것"뿐이다.
 @Service
 public class AdminResetService {
     private static final Logger log = LoggerFactory.getLogger(AdminResetService.class);
@@ -61,7 +60,7 @@ public class AdminResetService {
         int admittedKeys = clearAdmitted();
 
         movies.findById(props.getMovieId()).ifPresent(m -> {
-            m.reschedule(DataSeeder.nextBroadcastAt());
+            m.reschedule(Movie.nextBroadcastAt());
             movies.save(m);
         });
 

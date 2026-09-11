@@ -1,6 +1,7 @@
 package com.cgv.booking.domain;
 
 import jakarta.persistence.*;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 // 영화(방송) — 생중계라 1개, 시각 단일. queue/admitted는 이 movieId 단위.
@@ -23,4 +24,9 @@ public class Movie {
     // 방송 시각 변경 — 초기화가 부른다. 시드는 한 번만 도는데 방송일은 화면에 계속 보이므로,
     // 초기화 때 다시 미래로 옮기지 않으면 데모가 지난 날짜를 달고 돈다.
     public void reschedule(LocalDateTime at) { this.broadcastAt = at; }
+
+    // 다음 방송 시각 = 오늘로부터 7일 뒤 18:00. 시드(V2 마이그레이션)와 초기화가 같은 값을 쓴다.
+    public static LocalDateTime nextBroadcastAt() {
+        return LocalDate.now().plusDays(7).atTime(18, 0);
+    }
 }

@@ -98,7 +98,12 @@ func NewProducer(ctx context.Context, broker string) *Producer {
 		AllowAutoTopicCreation: true,
 		// RequiredAcks 기본값(RequireNone)은 브로커 확인 없이 성공 반환 — "발행 실패 처리"가
 		// 성립하려면 실패를 알아야 하므로 ack 필수.
-		RequiredAcks: kafkago.RequireOne,
+		// RequireAll = 그 파티션의 ISR 전부가 기록한 뒤에 성공. RequireOne(리더만)이면 팔로워가
+		// 복사하기 전에 리더가 죽을 때 성공으로 답한 입장이 사라지고, 호출자는 성공으로 알아
+		// 저널에도 남기지 않는다. 브로커의 min.insync.replicas 2 도 이 값일 때만 적용된다 —
+		// 살아 있는 사본이 하나뿐이면 실패로 돌아와 롤백 · 저널 경로를 탄다.
+		// 대가: 팔로워 복제까지 기다려 발행 지연이 늘어난다(queue_kafka_publish_duration_seconds).
+		RequiredAcks: kafkago.RequireAll,
 		MaxAttempts:  3, // 짧은 재시도 — 몇 초 순단은 여기서 흡수
 		// WriteTimeout은 "시도당" 상한이다 — kafka-go는 시도마다 새 타임아웃을 만들고
 		// 재시도 사이에 백오프를 둔다. 최악 지연 ≈ 1s×3 + 백오프 = 약 5s로,

@@ -39,6 +39,9 @@ spring:
 
   # MySQL — 영구 기록(예매 확정). 부팅 시 mysql이 늦게 떠도 재시도되게 hikari 설정.
   datasource:
+    # useSSL=false — 전송 구간을 암호화하지 않는다. 담기는 것이 데모 시드와 가상 사용자의 예매뿐이라
+    #   암호화로 지킬 데이터가 없다. 켜야 하는 환경은 환경변수 SPRING_DATASOURCE_URL 로 이 URL 전체를 덮어
+    #   sslMode=VERIFY_IDENTITY 와 서버 CA 를 준다(개별 파라미터만 따로 덮을 수는 없다).
     url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:cgv}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul
     username: ${MYSQL_USER:root}
     password: ${MYSQL_PASSWORD:password}
@@ -52,11 +55,23 @@ spring:
 
   jpa:
     hibernate:
-      ddl-auto: ${DDL_AUTO:none}   # 기본 none: 스키마는 배포 Job이 생성. 로컬 단일파드만 DDL_AUTO=update
+      # 스키마는 Flyway 가 만든다(아래 spring.flyway). Hibernate 는 엔티티와 테이블이 맞는지만 보고
+      #   어긋나면 기동을 멈춘다 — 마이그레이션을 빠뜨린 이미지가 조용히 뜨지 않게.
+      ddl-auto: ${DDL_AUTO:validate}
     properties:
       hibernate:
         dialect: org.hibernate.dialect.MySQLDialect
     open-in-view: false
+
+  # 스키마와 시드 — db/migration 의 V1(테이블) + com.cgv.booking.migration 의 V2(시드, Java).
+  #   기동할 때 JPA 보다 먼저, 아직 적용하지 않은 번호만 순서대로 적용하고 flyway_schema_history 에 남긴다.
+  #   파드 여러 대가 같이 떠도 Flyway 가 DB 잠금을 잡아 한 대만 적용하고, 나머지는 끝나기를 기다린다.
+  flyway:
+    # Flyway 도입 전에 Hibernate(ddl-auto=update)가 테이블을 만든 DB 에는 이력 표가 없다.
+    #   그대로면 "비어 있지 않은 스키마" 로 기동이 멈추므로, 그런 DB 는 V1 을 적용된 것으로 기록하고
+    #   V2 부터 본다. 빈 DB 는 해당하지 않는다(V1 부터 적용).
+    baseline-on-migrate: true
+    baseline-version: 1
 
   # Redis — 좌석락(SET NX EX)·입장인증(admitted Set). queue와 같은 Redis 인스턴스 공유.
   # 기본(로컬·dev standalone) = host/port. k3s HA = redis-sentinel 프로파일(문서 맨 아래)로 sentinel 전환.
@@ -92,7 +107,6 @@ spring:
 
 # 도메인 픽스값 — 시드·가격. env로 덮을 수 있게.
 cgv:
-  seed-on-start: ${SEED_ON_START:false}   # 기본 false: DataSeeder 멀티팟 레이스 차단. 로컬 단일파드만 true
   # 초기화 API(POST /api/admin/reset)의 인증 토큰. 비어 있으면 그 컨트롤러가 아예 등록되지 않는다.
   admin-token: ${ADMIN_TOKEN:}
   movie-id: kbo-allstar-2025

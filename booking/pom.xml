@@ -68,6 +68,18 @@
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- 스키마 마이그레이션. 테이블 생성 · 변경과 시드를 번호 순서대로 한 번씩 적용한다.
+             Hibernate 가 기동마다 스키마를 고치면 파드 둘이 동시에 DDL 을 돌려 부딪히므로
+             replica 를 1 에 묶어야 했다. Flyway 는 DB 잠금 아래에서 한 대만 적용한다.
+             MySQL 지원은 flyway-mysql 모듈에 따로 있다. 버전은 부모 BOM 이 관리한다. -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
+        </dependency>
         <!-- 관측: Actuator = readiness(/actuator/health) + metric 통로(/actuator/prometheus).
              Micrometer Prometheus registry = HikariCP·JVM·HTTP·Kafka 지표를 Prometheus 포맷으로. -->
         <dependency>

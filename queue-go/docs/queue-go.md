@@ -63,7 +63,7 @@ redis/             go-redis + Lua — Redis 접근을 전부 여기 가둠
   query.go           조회 헬퍼(대상 영화·대기 인원)
 metrics/rate.go    승격 처리율 — ETA 계산 재료. 값은 Redis 창 평균(redis/rate.go)에서 온다
 metrics/prom.go    promauto 계측 7벌(2026-07-05 신설) — 히스토그램·게이지·샘플러·/metrics :9091 서버(정본 = 설계서 1부 §7-B)
-kafka/kafka.go     producer(admissions, RequireOne·재시도) + consumer(bookings-completed → 처리 후 커밋 → active ZREM) + 실패 카운터 2종
+kafka/kafka.go     producer(admissions·admissions-revoked, RequireAll·재시도) + consumer(bookings-completed → 처리 후 커밋 → active ZREM) + 실패 카운터 2종
 ```
 
 **핵심 원칙:** `handler`·`processor`는 **`redis` 패키지만** 보고 go-redis를 직접 안 만짐 → Redis 세부(Lua·키·드라이버)가 `redis/` 한 곳에 갇힘.

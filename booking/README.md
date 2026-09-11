@@ -197,12 +197,13 @@ booking/src/main/java/com/cgv/booking/
 │   └── QueueEvent              {requestId, movieId, reason} 공용 형식
 ├── domain/                    JPA 엔티티(Movie·Screening·Seat·Booking·BookingSeat)
 ├── repo/                      Spring Data JPA 리포지토리
-├── init/DataSeeder           도메인 시드(로컬 단일파드 전용, 기본 비활성)
+├── migration/V2__SeedDemoData 데모 시드(Flyway Java 마이그레이션 — 영화 1 · 회차 20 · 좌석 4,000)
 ├── config/
 │   ├── CgvProps               application.yml의 cgv.* 픽스값 바인딩
 │   └── KafkaConfig            admissions 소비 재시도 + DLT 격리
 └── resources/
-    ├── application.yml        설정 정본(datasource·kafka·actuator·tracing)
+    ├── application.yml        설정 정본(datasource·flyway·kafka·actuator·tracing)
+    ├── db/migration/          Flyway SQL 마이그레이션(V1 테이블 다섯)
     └── logback-spring.xml     JSON 로그(MDC traceId/spanId)
 ```
 
@@ -269,7 +270,9 @@ booking_seats  (id, booking_id, screening_id, seat_no, UNIQUE(screening_id, seat
 - **startupProbe 필요**: JVM+Spring 초기화 + MySQL eager 연결로 기동이 수십 초 걸린다. liveness만 걸면 기동 중인 파드를 죽었다고 재시작한다.
 - **readiness = MySQL·Redis만**: 둘 없으면 아무것도 못 한다. Kafka는 제외한다(공유 의존 + plain spring-kafka엔 health indicator가 없음).
 - **graceful shutdown**: `server.shutdown: graceful`. `exec java`로 JVM이 PID 1로 SIGTERM을 직접 받는다.
-- **DataSeeder는 배포 시 비활성**: `count()==0` 가드가 비원자라 멀티팟 동시 기동 시 PK 충돌이 난다. 로컬 단일파드만 `SEED_ON_START=true`로 켠다.
+- **스키마와 시드는 Flyway**: 기동할 때 JPA보다 먼저 V1(테이블)·V2(시드)를 적용하고 `flyway_schema_history`에 남긴다. 여러 대가 같이 떠도 Flyway가 DB 잠금을 잡아 한 대만 적용한다. `ddl-auto=validate`라 엔티티와 테이블이 어긋나면 기동이 멈춘다.
+- **Flyway 도입 전 DB는 V1을 기록만 한다**: Hibernate가 만든 테이블이 있고 이력 표가 없는 DB는 `baseline-on-migrate`로 V1을 적용된 것으로 기록하고 V2부터 본다. V2는 movies에 행이 있으면 넣지 않는다. 그런 DB의 테이블은 문자셋이 utf8mb3로 남는다(새 DB는 utf8mb4).
+- **스키마 변경은 옛 코드와 호환되게**: RollingUpdate 동안 옛 파드와 새 파드가 새 스키마 위에서 같이 돈다. 테이블·NULL 허용 컬럼·인덱스 추가는 한 번에 한다. 컬럼 삭제·이름 변경·타입 변경·기본값 없는 NOT NULL 추가는 배포를 나눈다 — 새것을 추가하고, 코드가 둘 다 쓰게 하고, 다음 배포에서 옛것을 지운다. MySQL은 DDL을 트랜잭션으로 되돌리지 못해 파일 하나에 DDL 하나를 둔다.
 
 ---
 
@@ -308,7 +311,7 @@ booking_seats  (id, booking_id, screening_id, seat_no, UNIQUE(screening_id, seat
 | `ADMIN_TOKEN` | (없음) | 초기화 API 인증. 비어 있으면 그 컨트롤러가 등록되지 않는다 |
 | `VIRTUAL_THREADS` | true | 로컬 진단 시 off 가능 |
 | `OTLP_HTTP_ENDPOINT` | http://localhost:4318/v1/traces | Tempo/collector(HTTP) |
-| `DDL_AUTO` / `SEED_ON_START` | none / false | 로컬 단일파드만 update / true |
+| `DDL_AUTO` | validate | 스키마는 Flyway가 만든다. 엔티티를 바꿔 보는 로컬 실험에서만 update |
 
 세 시계의 순서: `SEAT_LOCK_TTL < SESSION_TIMEOUT(queue) < ADMITTED_TTL`.
 좌석락은 세션보다 먼저 풀려야 자리를 잃은 사용자가 좌석을 붙잡지 않고, 인증은 세션보다 늦게 만료돼야 정상 세션이 중간에 끊기지 않는다.
@@ -328,8 +331,7 @@ booking_seats  (id, booking_id, screening_id, seat_no, UNIQUE(screening_id, seat
 
 - **SIGKILL 갭**: graceful은 SIGTERM만 커버한다. "PG 승인 후 커밋 전 SIGKILL(OOM·전원단절)" 경로는 여전히 뚫린다.
 - **완료발행 outbox 미도입**: `bookings-completed` 발행 실패는 로그로 관측하되 무손실 보장은 아니다 — queue의 세션 타임아웃이 최후 회수한다.
-- **스키마 마이그레이션 도구 없음**: Flyway/Liquibase가 없어 `DDL_AUTO=none`으로 두면 스키마를 만들 주체가 없다. 로컬은 `update`+시드로 대체하고, 그 때문에 replica 증설이 막혀 있다.
 - **테스트 없음**: `src/test`가 없고 이미지 빌드는 `-DskipTests`다. 동시 예매 차단·멱등 재시도 같은 불변식이 자동 검증으로 고정돼 있지 않다.
 - **PG는 mock**: 실 PG 연동 시 실패코드·재시도·webhook·amount 검증이 추가된다.
-- **JDBC 전송보안**: `useSSL=false&allowPublicKeyRetrieval=true`가 URL에 리터럴로 있어 인프라 레이어에서 끌 수 없다. 내부망 전제.
+- **JDBC 전송 암호화 안 씀**: URL이 `useSSL=false`다. 담기는 것이 데모 시드와 가상 사용자의 예매뿐이라 암호화로 지킬 데이터가 없어 켜지 않았다. 켜려면 환경변수 `SPRING_DATASOURCE_URL`로 URL 전체를 덮어 `sslMode=VERIFY_IDENTITY`와 서버 CA를 주고, 서버 쪽에서 `require_secure_transport=1`로 평문 접속을 막는다.
 - **사이징 미측정**: 파드당 동시 세션·정원·MySQL 스펙은 부하테스트로 확정한다.
