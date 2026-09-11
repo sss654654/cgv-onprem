@@ -14,6 +14,7 @@ import com.cgv.booking.web.ApiException;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.dao.QueryTimeoutException;
@@ -87,7 +88,13 @@ public class BookingService {
         }
 
         // ③ 게이트
-        if (!admitted.isAdmitted(movieId, requestId)) {
+        boolean admittedNow;
+        try {
+            admittedNow = admitted.isAdmitted(movieId, requestId);
+        } catch (DataAccessException e) {
+            throw redisUnavailable("입장 인증", e);
+        }
+        if (!admittedNow) {
             countConfirm("forbidden");
             throw ApiException.forbidden("입장객이 아닙니다.");
         }
@@ -108,7 +115,13 @@ public class BookingService {
         }
 
         // ⑤ 락 재확인 + 갱신: 결제 전 내 좌석 살아있으면 TTL 연장(PG 도는 사이 만료 방지).
-        if (!locks.renewMine(screeningId, seatNos, requestId)) {
+        boolean renewed;
+        try {
+            renewed = locks.renewMine(screeningId, seatNos, requestId);
+        } catch (DataAccessException e) {
+            throw redisUnavailable("좌석 락", e);
+        }
+        if (!renewed) {
             countConfirm("lock_expired");
             throw ApiException.conflict("좌석 점유가 만료되었거나 내 좌석이 아닙니다. 다시 선택하세요.");
         }
@@ -183,6 +196,18 @@ public class BookingService {
         if (!winner.getScreeningId().equals(screeningId) || !won.equals(new HashSet<>(seatNos))) {
             throw ApiException.conflict("동일 멱등키로 다른 예매 요청이 접수되었습니다. 새로 시도하세요.");
         }
+    }
+
+    // Redis 가 느리거나 끊겨 게이트 · 락을 확인하지 못한 경우. 결제 전이라 환불할 것이 없다.
+    // 그대로 흘리면 500 이 나가고 result 가 어디에도 안 잡혀, 부하에서 "Redis 에서 막혔다"를 지표로 가를 수 없다.
+    // Spring Data Redis 는 Lettuce 예외를 DataAccessException 계열로 바꿔 던진다
+    //   (명령 타임아웃 → QueryTimeoutException, 연결 실패 → RedisConnectionFailureException).
+    // 503 은 "잠시 뒤 다시 시도하면 될 수 있다"는 뜻이라, 요청 자체가 틀린 409 · 400 과 갈린다.
+    private ApiException redisUnavailable(String step, DataAccessException e) {
+        countConfirm("redis_error");
+        log.warn("Redis 로 {} 확인 실패: err={}", step, e.toString());
+        return new ApiException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "REDIS_UNAVAILABLE",
+                "잠시 후 다시 시도하세요.");
     }
 
     // 환불 예외 보호: refund 실패를 유실하지 않는다(돈). 실 PG면 "돈 빠지고 환불도 유실"이

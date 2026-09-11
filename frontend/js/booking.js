@@ -394,6 +394,9 @@ export async function confirmPay() {
     return;
   }
   if (status === 403) { serverKicked(); return; }
+  // 503 = 결제 전 단계(입장 인증 · 좌석 락 확인)에서 Redis 가 응답하지 않은 것. 돈은 빠지지 않았고
+  //   좌석 락은 TTL 동안 남아 있어 같은 화면에서 다시 누르면 된다.
+  if (status === 503) { toast('일시적으로 처리하지 못했습니다. 잠시 후 다시 결제하세요.', true); return; }
   toast('결제 실패', true);
 }
 
