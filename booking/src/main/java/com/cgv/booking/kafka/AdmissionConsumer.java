@@ -241,6 +241,7 @@ public final class AdmissionConsumer {
         long now = System.currentTimeMillis();
         int slowCount = 0;
         long slowestWait = 0;
+        int slowestIndex = -1;
         for (int i = 0; i < valid.size(); i++) {
             count("ok");
             long publishedAt = validPublishedAts.get(i);
@@ -253,10 +254,21 @@ public final class AdmissionConsumer {
                 queueWait.record(waited, TimeUnit.MILLISECONDS);
                 if (waited >= SLOW_WAIT_MS) {
                     slowCount++;
-                    slowestWait = Math.max(slowestWait, waited);
-                    waitSpan(validRecords.get(i), publishedAt, received, waited);
+                    if (waited > slowestWait) {
+                        slowestWait = waited;
+                        slowestIndex = i;
+                    }
                 }
             }
+        }
+        // 배치에서 가장 오래 기다린 레코드 하나만 스팬으로 남긴다.
+        //   레코드마다 남기면 오픈 순간 한 배치에서 수백 개가 만들어지고, 그 비용이 이 스레드에
+        //   그대로 얹혀 다음 poll 이 늦어진다 — 재는 행위가 재려는 값을 키운다.
+        //   2026-09-12 판에서 실제로 그랬다: admissions consume 스팬이 5초를 넘겼는데
+        //   그 시간은 처리가 아니라 스팬 생성이었고, 전파 달성률이 95.05% 에서 89.99% 로 떨어졌다.
+        //   한 배치 안의 레코드는 같은 파티션·비슷한 시각이라 가장 느린 하나로 구간이 드러난다.
+        if (slowestIndex >= 0) {
+            waitSpan(validRecords.get(slowestIndex), validPublishedAts.get(slowestIndex), received, slowestWait);
         }
         // 건별 info 로그는 두지 않는다 — 오픈 순간 초당 수백 줄이 되고, 건별 내용은 트레이스에 있다.
         log.info("입장 인증 추가: batch={} skipped={}", valid.size(), records.size() - valid.size());

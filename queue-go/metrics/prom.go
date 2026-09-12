@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel/trace"
@@ -23,9 +24,11 @@ import (
 // ── 행1: 유저가 지금 겪는 것 ──────────────────────────────────────────
 // RPS(count 증가율)·p99(분위수)·에러율(status 라벨)이 전부 이 하나에서 파생된다.
 // 버킷: 기본값(DefBuckets)의 첫 칸이 5ms인데 폴링 응답이 2-5ms라 분위수가 전부 첫 칸
-//   안에 들어갔다. 그러면 histogram_quantile이 0과 0.005 사이를 선형보간해 p50 0.0025 ·
-//   p99 0.005를 상수로 내놓는다 — 실측(2026-08-13·08-14 부하 판) 전 구간이 그 값이었다.
-//   앞쪽에 0.001·0.0025를 넣어 그 구간을 갈랐다. 뒤쪽은 기본값 그대로 10초까지.
+//
+//	안에 들어갔다. 그러면 histogram_quantile이 0과 0.005 사이를 선형보간해 p50 0.0025 ·
+//	p99 0.005를 상수로 내놓는다 — 실측(2026-08-13·08-14 부하 판) 전 구간이 그 값이었다.
+//	앞쪽에 0.001·0.0025를 넣어 그 구간을 갈랐다. 뒤쪽은 기본값 그대로 10초까지.
+//
 // 시리즈 비용: 경로 7 × status 종류 × 버킷 수. 버킷이 11 → 13이라 경로당 2 시리즈씩 는다.
 var httpDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 	Name: "queue_http_request_duration_seconds",
@@ -124,25 +127,32 @@ func RegisterFailureCounters(publish, consume func() float64) {
 // ── 발행: queue 가 booking 에게 보내는 두 통보 ──────────────────────────────
 //
 // queue 가 발행하는 토픽은 둘이고 뜻이 반대다.
-//   admissions          자리를 줬다 → booking 이 입장 인증을 만든다
-//   admissions-revoked  자리를 뺏었다(세션 만료·이탈) → booking 이 인증을 지운다
+//
+//	admissions          자리를 줬다 → booking 이 입장 인증을 만든다
+//	admissions-revoked  자리를 뺏었다(세션 만료·이탈) → booking 이 인증을 지운다
+//
 // 지금까지 승격분만 카운터로 셌는데(promotedTotal), 정원이 비어 있을 때 enter 가 승격 없이
-//   바로 입장시키는 몫이 빠져 "자리를 준 총량"이 안 나왔다. 발행 지점이 여럿이라(enter 핸들러·
-//   승격 루프·만료 루프·재발행 스윕) 각각에 심으면 빠뜨리는데, 전부 PublishEvents 한 곳을
-//   지나므로 거기 한 번만 올린다.
+//
+//	바로 입장시키는 몫이 빠져 "자리를 준 총량"이 안 나왔다. 발행 지점이 여럿이라(enter 핸들러·
+//	승격 루프·만료 루프·재발행 스윕) 각각에 심으면 빠뜨리는데, 전부 PublishEvents 한 곳을
+//	지나므로 거기 한 번만 올린다.
 //
 // 건수와 지연을 나눠 두는 이유: 발행은 여러 건을 한 번의 WriteMessages 로 묶어 보낸다.
-//   그래서 히스토그램의 관측 1건 = 배치 1회이고 사람 수가 아니다. 사람 수는 이 카운터가 센다.
+//
+//	그래서 히스토그램의 관측 1건 = 배치 1회이고 사람 수가 아니다. 사람 수는 이 카운터가 센다.
 var kafkaPublished = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "queue_kafka_published_total",
 	Help: "queue 가 발행한 이벤트 건수 — topic 별. admissions=자리 줌, admissions-revoked=자리 뺏음"},
 	[]string{"topic"})
 
 // 발행에 걸린 시간 = WriteMessages 호출 시간(브로커가 받았다고 답할 때까지, min.insync 복제 확인 포함).
-//   booking 이 소비해 인증을 만들기까지는 여기 안 들어간다 — 그건 booking_admission_lag 이다.
-//   이 선이 낮은데 사용자가 못 들어가면 원인은 발행이 아니라 소비 쪽이다.
+//
+//	booking 이 소비해 인증을 만들기까지는 여기 안 들어간다 — 그건 booking_admission_lag 이다.
+//	이 선이 낮은데 사용자가 못 들어가면 원인은 발행이 아니라 소비 쪽이다.
+//
 // exemplar 를 붙여 승격 루프·만료 루프의 트레이스로 들어가는 입구를 만든다. 두 루프는 HTTP
-//   요청이 아니라 대시보드에서 누를 자리가 없었고, Tempo 에서 이름으로 검색해야만 열렸다.
+//
+//	요청이 아니라 대시보드에서 누를 자리가 없었고, Tempo 에서 이름으로 검색해야만 열렸다.
 var kafkaPublishDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 	Name: "queue_kafka_publish_duration_seconds",
 	Help: "발행 1회(배치)에 걸린 시간 — topic 별",
@@ -170,8 +180,10 @@ func ObservePublish(ctx context.Context, topic string, n int, d time.Duration) {
 // ── Kafka 왕복: booking 이 예매를 확정한 시각부터 자리가 실제로 빈 시각까지 ─────
 //
 // 회전 속도(정원 ÷ 체류 시간)에 이 구간이 통째로 들어간다. 발행 건수와 소비 건수는 각각
-//   지표로 나오지만 둘이 같아도 이 구간이 늘어났는지는 알 수 없다 — 한 건이 건너오는 데
-//   걸린 시간은 어느 지표에도 없다.
+//
+//	지표로 나오지만 둘이 같아도 이 구간이 늘어났는지는 알 수 없다 — 한 건이 건너오는 데
+//	걸린 시간은 어느 지표에도 없다.
+//
 // 경계는 queue_http_request_duration_seconds 와 같은 눈금(뒤쪽 절반)이다.
 var completedLag = promauto.NewHistogram(prometheus.HistogramOpts{
 	Name: "queue_completed_lag_seconds",
@@ -185,11 +197,14 @@ var completedLag = promauto.NewHistogram(prometheus.HistogramOpts{
 // completedTotal = 자리 반환을 실제로 처리한 건수. 위 히스토그램의 _count 와 나눠 둔다.
 //
 // 히스토그램은 음수 지연을 버린다(아래 ObserveCompletedLag). 발행 시각이 booking 파드의
-//   시계라 queue 노드가 뒤에 있으면 지연이 음수로 나오는데, 소비 지연이 수 ms 대이고
-//   노드 간 NTP 오차가 그 급이라 관측이 통째로 빠진다 — 2026-08-23 실측에서 확정 3,400 건
-//   중 히스토그램에 남은 것이 1,685 건이었다(소비 성공 로그는 3,505 건).
+//
+//	시계라 queue 노드가 뒤에 있으면 지연이 음수로 나오는데, 소비 지연이 수 ms 대이고
+//	노드 간 NTP 오차가 그 급이라 관측이 통째로 빠진다 — 2026-08-23 실측에서 확정 3,400 건
+//	중 히스토그램에 남은 것이 1,685 건이었다(소비 성공 로그는 3,505 건).
+//
 // 그때 _count 를 반환 건수로 읽으면 "확정보다 반환이 적다 = 전달이 샌다" 로 잘못 읽힌다.
-//   이 카운터는 시계와 무관하게 소비 성공마다 오르므로 발행 건수와 직접 대조된다.
+//
+//	이 카운터는 시계와 무관하게 소비 성공마다 오르므로 발행 건수와 직접 대조된다.
 var completedTotal = promauto.NewCounter(prometheus.CounterOpts{
 	Name: "queue_completed_total",
 	Help: "예매 확정을 받아 자리를 반환한 건수 — 시계 오차와 무관하게 소비 성공마다 증가",
@@ -223,9 +238,13 @@ var poolGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
 // RegisterPoolCounters는 풀 누적 카운터 셋을 등록한다. main에서 한 번 부른다.
 //
 // 위 게이지는 5초마다 찍는 순간값이라 왕복 1ms짜리 대기를 못 잡는다 — 실측(2026-08-14,
-//   대기 998명)에서 in_use와 waiting이 전 구간 0이었다. "안 기다렸다"가 아니라 못 본 것이다.
+//
+//	대기 998명)에서 in_use와 waiting이 전 구간 0이었다. "안 기다렸다"가 아니라 못 본 것이다.
+//
 // go-redis가 이미 세고 있는 누적값을 그대로 내보낸다. 누적이라 샘플 사이에 일어난 사건도
-//   남으므로, 풀이 좁은지는 이 셋으로만 판정된다.
+//
+//	남으므로, 풀이 좁은지는 이 셋으로만 판정된다.
+//
 // CounterFunc로 두면 스크레이프 시점에 읽어 샘플러 주기와 무관하게 최신값이 나온다.
 func RegisterPoolCounters(rdb *redis.Client) {
 	promauto.NewCounterFunc(prometheus.CounterOpts{
@@ -324,6 +343,29 @@ var trackedMovies = map[string]struct{}{}
 // /debug/pprof 도 이 포트에만 연다. 지표는 총량만 알려주고 그 안에 무엇이 들었는지는
 // 말하지 않는다 — 힙이 26MiB 라는 것은 알아도 그중 무엇이 얼마인지는 pprof 로만 본다.
 // 앱 포트에 열면 인그레스를 통해 밖에서 스택·힙 상태에 닿을 수 있으므로 여기에만 둔다.
+// 기본 Go 컬렉터를 런타임 스케줄러 지표까지 내는 것으로 바꾼다.
+//
+// 기본 집합에는 "고루틴이 CPU 차례를 기다린 시간" 이 없다. 그래서 이 파드가 느릴 때
+//
+//	자원은 전부 여유인데 응답만 느린 상태를 설명할 수가 없었다 — 2026-09-12 stg 1만 명
+//	판에서 순번 조회 p99 가 2.20초였는데 CPU 는 limit 대비 20.9%(버스트 15초 구간 최대) ·
+//	메모리 10% · Redis 풀 대기 0회였다.
+//
+// GOMAXPROCS 가 1 이라(CPU limit 1000m) 동시에 도는 고루틴은 하나뿐이다. 총 CPU 사용률이
+//
+//	낮아도 그 순간 실행 가능한 고루틴이 쌓이면 뒤의 것은 차례를 기다린다 — 그 대기가
+//	go_sched_latencies_seconds 다. 평균 사용률로는 안 보이는 값이다.
+//
+// MetricsScheduler 만 켠다. 전부 켜면 시리즈가 수백 개 늘고, 지금 답해야 하는 질문은
+//
+//	"기다렸나" 하나다.
+func init() {
+	prometheus.Unregister(collectors.NewGoCollector())
+	prometheus.MustRegister(collectors.NewGoCollector(
+		collectors.WithGoCollectorRuntimeMetrics(collectors.MetricsScheduler),
+	))
+}
+
 func ServeMetrics(port string) *http.Server {
 	mux := http.NewServeMux()
 	// EnableOpenMetrics — exemplar를 실어 보내는 유일한 조건이다. Prometheus text 포맷에는

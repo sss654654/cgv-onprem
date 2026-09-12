@@ -6,6 +6,15 @@ server:
   #   @Valid 의 필드 검증(좌석 8개 등)은 역직렬화가 끝난 뒤에 도는 것이라 읽는 것 자체를 막지 못한다.
   #   이 API 들이 받는 본문은 좌석 번호 몇 개 수준이다.
   tomcat:
+    # 스레드 풀 지표(tomcat_threads_busy · tomcat_threads_config_max)를 내보낸다.
+    #   Micrometer 는 Tomcat 의 MBean 을 읽어 이 값을 만드는데, Spring Boot 는 MBean 등록을
+    #   기본으로 끄기 때문에 이 한 줄이 없으면 지표 자체가 생기지 않는다.
+    # 이게 없으면 "요청이 스레드를 기다리는 시간" 이 어느 지표에도 안 잡힌다.
+    #   http_server_requests 는 스레드를 잡은 뒤부터 재고, active 도 잡은 것만 센다.
+    #   2026-09-12 stg 1만 명 판에서 ALB 가 잰 p99 가 48초인데 앱이 잰 것은 4.33초였다.
+    #   그 44초가 이 대기이고, 지표가 없어 화면에서는 두 값이 왜 다른지 설명할 수 없었다.
+    mbeanregistry:
+      enabled: true
     max-http-form-post-size: 16KB
     max-swallow-size: 16KB
     # 요청 로그 — 남용이 생겼을 때 출발지를 가릴 수 있어야 한다. Cloudflare 뒤에서는

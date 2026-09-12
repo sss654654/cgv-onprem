@@ -75,8 +75,12 @@ func New(addr, password string, poolSize int, masterName string, sentinelAddrs [
 // 이게 없으면 트레이스가 "HTTP 요청 하나" 에서 끝나, 느린 요청을 열어도 Redis 에서
 // 기다린 것인지 그 밖인지 안 갈린다 — 지표는 총량만 주고 구간을 안 준다.
 //
-// 지표(metrics)는 켜지 않는다. 명령·상태별 카운터가 시리즈를 늘리는데, 같은 판단을
-// queue_redis_pool 계열과 redis_exporter 가 이미 준다.
+// redisotel 의 지표(InstrumentMetrics)는 켜지 않는다 — 명령·상태별 카운터가 시리즈를 늘린다.
+// 대신 명령에 걸린 시간만 재는 훅을 직접 단다(metrics.go 의 queue_redis_command_duration_seconds).
+// 앞서 이 계측을 통째로 안 넣은 근거는 "queue_redis_pool 계열과 redis_exporter 가 같은 판단을
+//   준다" 였는데, stg 에서 둘 다 성립하지 않았다. 풀 지표는 연결을 얻기까지만 재고(1만 명 판에서
+//   대기 0회 · 타임아웃 0회였는데 순번 조회 p99 는 2.20초였다), ElastiCache 에는
+//   redis_exporter 를 붙이지 않는다.
 //
 // WithDBStatement(false) — 기본값이 true 라 명령 인자가 db.statement 에 통째로 실린다.
 // Tempo 에 저장된 실제 span 에서 확인한 값:
@@ -90,6 +94,7 @@ func instrument(rdb *goredis.Client) *goredis.Client {
 	if err := redisotel.InstrumentTracing(rdb, redisotel.WithDBStatement(false)); err != nil {
 		slog.Warn("redis 트레이싱 계측 실패(트레이스 없이 계속)", "err", err)
 	}
+	rdb.AddHook(metricsHook{})
 	return rdb
 }
 
