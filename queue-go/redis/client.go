@@ -16,14 +16,29 @@ type Client struct {
 	rdb *goredis.Client
 }
 
-// New는 클라이언트를 만든다. 연결을 즉시 맺지 않고(lazy) 첫 명령 때 풀에서
-// 꺼낸다 → 실제 도달은 Ping으로 확인한다. (옛 Java의 Lettuce 풀 = 여기 대응.)
+// New는 클라이언트를 만든다. (옛 Java의 Lettuce 풀 = 여기 대응.)
 //
 // poolSize: 0이면 라이브러리 기본(10×GOMAXPROCS)을 쓴다 — automaxprocs 교정 후엔
 // CPU limit 기준이라 안전하며, 실측값이 나오면 REDIS_POOL_SIZE로 명시한다.
-// Read/WriteTimeout 500ms: 미설정 시 기본 약 3초 — "느려짐"이 그 3초 동안 고루틴·풀을
-// 조용히 잠그는 꼬리가 되므로 수백 ms에서 fast fail. 실패는 에러로
-// 드러나 관측 신호가 된다.
+//
+// ★ 풀을 기동 때 채운다(MinIdleConns = PoolSize). 2026-09-12 stg 1만 명 판의 오픈 순간 실측:
+//   고루틴 213 → 10,543 · 풀 대기(PendingRequests) 2,304 · 풀 사용 중 28 / 200 ·
+//   ElastiCache 새 연결 1,675/분 · Redis 명령 273,472건 중 2.5초 초과 4,262건 ·
+//   ElastiCache CPU 7.5% · 이 파드 CPU 0.18코어.
+//   서버도 클라이언트도 한가한데 명령이 초 단위였다. 풀이 비어 있었기 때문이다 —
+//   이 서비스는 오픈 전에 트래픽이 없어(로비 폴링은 frontend·booking 으로 간다) 파드가
+//   몇 시간 떠 있어도 풀은 늘 빈 채로 오픈을 맞는다. go-redis 는 풀 자리를 쥔 채로 dial 하므로
+//   첫 50개가 TLS 를 맺는 동안 그 자리를 아무도 못 쓰고, 나머지는 전부 기다린다.
+//   미리 맺어 두면 오픈 순간 dial 이 0이 된다.
+//
+// ★ Read/WriteTimeout 500ms → 2s. 원래 근거는 "느려짐이 풀을 조용히 잠그는 꼬리가 되지 않게
+//   fast fail" 이었는데, 버스트에서는 정반대로 작동했다. P 하나에 고루틴 수천 개가 몰리면
+//   응답을 읽을 고루틴이 500ms 안에 차례를 못 받고, go-redis 는 타임아웃 난 커넥션을 버리고
+//   재시도하면서 새로 dial 한다. 그래서 풀 상한이 200인데 새 연결이 분당 1,675개였다 —
+//   fast fail 이 churn 을 만들어 풀을 잠갔다. 정상 명령은 수 ms 라 2초는 400배 여유이고,
+//   진짜 장애는 여전히 초 단위로 드러난다.
+// ★ MaxRetries 3 → 1. 타임아웃 2초 × 재시도 3회 = 6초 꼬리를 4초로 묶는다.
+//   버스트에서는 재시도가 churn 의 재료이고, 장애에서는 fast fail 이 더 낫다.
 //
 // useTLS: 연결을 TLS 로 감싼다. 서버 인증서는 검증한다 — 검증을 끄면 같은 VPC 안에서
 // 주소를 가로챈 쪽에 그대로 붙어 비밀번호를 넘겨주게 되고, 암호화를 켠 이유가 사라진다.
@@ -46,11 +61,13 @@ func New(addr, password string, poolSize int, masterName string, sentinelAddrs [
 			DB:               0,
 			TLSConfig:        tlsConf,
 			DialTimeout:      2 * time.Second,
-			ReadTimeout:      500 * time.Millisecond,
-			WriteTimeout:     500 * time.Millisecond,
+			ReadTimeout:      2 * time.Second,
+			WriteTimeout:     2 * time.Second,
+			MaxRetries:       1,
 		}
 		if poolSize > 0 {
 			fo.PoolSize = poolSize
+			fo.MinIdleConns = poolSize
 		}
 		return &Client{rdb: instrument(goredis.NewFailoverClient(fo))}
 	}
@@ -60,11 +77,13 @@ func New(addr, password string, poolSize int, masterName string, sentinelAddrs [
 		DB:           0,
 		TLSConfig:    tlsConf,
 		DialTimeout:  2 * time.Second,
-		ReadTimeout:  500 * time.Millisecond,
-		WriteTimeout: 500 * time.Millisecond,
+		ReadTimeout:  2 * time.Second,
+		WriteTimeout: 2 * time.Second,
+		MaxRetries:   1,
 	}
 	if poolSize > 0 {
 		opts.PoolSize = poolSize
+		opts.MinIdleConns = poolSize
 	}
 	return &Client{rdb: instrument(goredis.NewClient(opts))}
 }
