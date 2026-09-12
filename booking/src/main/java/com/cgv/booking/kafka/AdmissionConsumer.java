@@ -12,6 +12,7 @@ import io.opentelemetry.api.trace.TraceFlags;
 import io.opentelemetry.api.trace.TraceState;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.api.trace.TracerProvider;
+import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
@@ -41,7 +42,15 @@ public final class AdmissionConsumer {
     private final ObjectMapper mapper;
     private final MeterRegistry meterRegistry;
     private final Timer lag;
+    private final Timer queueWait;
     private final Tracer tracer;
+    // 이 시간을 넘게 기다린 레코드만 span 과 경고 로그를 남긴다.
+    // 전부 남기면 오픈 순간에 span 이 레코드 수만큼 늘어 수집이 한도에 닿는다 — 실제로
+    //   2026-09-12 stg 1만 명 판에서 Tempo 가 live_traces_exceeded 로 40,895 span 을 버렸고,
+    //   하필 버려진 구간이 느린 구간이라 화면에서 exemplar 를 눌러도 트레이스가 없었다.
+    //   느린 것만 남기면 양은 수백 건이고, 보고 싶은 것은 다 남는다.
+    // 500ms 인 이유: 전파 목표가 1초라 그 절반을 넘으면 이미 볼 값이다.
+    private static final long SLOW_WAIT_MS = 500;
 
     public AdmissionConsumer(AdmittedService admitted, ObjectMapper mapper, MeterRegistry meterRegistry,
                              ObjectProvider<Tracer> tracerProvider) {
@@ -68,6 +77,23 @@ public final class AdmissionConsumer {
         //   방향에 따라 자릿수가 다르므로, 느린 것은 브로커가 아니라 admissions 경로 쪽이다.
         this.lag = Timer.builder("booking.admission.lag")
                 .description("승격 발행(queue) → 입장 인증 발급(booking) 지연")
+                .serviceLevelObjectives(
+                        Duration.ofMillis(1), Duration.ofMillis(5), Duration.ofMillis(10),
+                        Duration.ofMillis(25), Duration.ofMillis(50), Duration.ofMillis(100),
+                        Duration.ofMillis(250), Duration.ofMillis(500), Duration.ofSeconds(1),
+                        Duration.ofMillis(2500), Duration.ofSeconds(5), Duration.ofSeconds(10),
+                        Duration.ofSeconds(20), Duration.ofSeconds(30), Duration.ofSeconds(60))
+                .register(meterRegistry);
+        // booking_admission_wait_seconds — 위 lag 중 "이 파드가 그 레코드를 손에 쥐기 전"까지.
+        // lag 하나로는 느릴 때 어디가 느린지 안 갈린다. lag = 대기 + 처리이고, 처리는
+        //   배치 전체가 Redis 파이프라인 한 번이라 묶음당 한 값이다. 둘을 따로 재면
+        //   lag - wait 가 처리 시간이 되어 뺄셈 하나로 갈린다.
+        // 2026-09-12 stg 1만 명 판에서 이것이 필요해졌다 — lag p99 가 4.96초인데 발행 호출은
+        //   979ms, 소비 처리 span 은 500ms 미만이었다. 남은 3초가 어느 구간인지 지표로 못 갈렸고,
+        //   트레이스는 발행과 소비가 링크로만 이어져 한 화면에 그 틈이 안 나온다.
+        // 눈금은 lag 와 같게 둔다 — 둘을 같은 그래프에 겹쳐 보려면 버킷 경계가 같아야 한다.
+        this.queueWait = Timer.builder("booking.admission.wait")
+                .description("승격 발행(queue) → 이 파드가 그 레코드를 배치로 받은 시점")
                 .serviceLevelObjectives(
                         Duration.ofMillis(1), Duration.ofMillis(5), Duration.ofMillis(10),
                         Duration.ofMillis(25), Duration.ofMillis(50), Duration.ofMillis(100),
@@ -155,9 +181,38 @@ public final class AdmissionConsumer {
         }
     }
 
+    // 기다린 구간을 스팬 하나로 그린다. 시작·끝을 직접 넣어(발행 시각 → 배치를 쥔 시각)
+    //   실제로 기다린 그 구간이 화면에서 막대로 보이게 한다. 이 구간은 지금까지 어느 스팬에도
+    //   없었다 — 발행 스팬은 WriteMessages 가 돌아오면 끝나고, 소비 스팬은 처리를 시작할 때
+    //   열려서, 그 사이 메시지가 파티션에 앉아 있던 시간이 두 스팬 사이 빈 곳으로 사라졌다.
+    // 발행 스팬을 부모로 삼는다(링크가 아니라). 레코드 하나짜리라 부모가 하나로 정해지고,
+    //   그래야 발행 → 대기 → 소비가 한 트레이스에서 이어져 보인다.
+    // 파티션·오프셋을 붙이는 이유: 느린 것이 한 파티션에 몰리는지 흩어지는지가
+    //   브로커 쪽과 컨슈머 쪽을 가르는 첫 갈림이다.
+    private void waitSpan(ConsumerRecord<String, String> record, long publishedAt, long received, long waited) {
+        SpanBuilder builder = tracer.spanBuilder("admissions queue wait")
+                .setSpanKind(SpanKind.CONSUMER)
+                .setStartTimestamp(publishedAt, TimeUnit.MILLISECONDS)
+                .setAttribute("messaging.system", "kafka")
+                .setAttribute("messaging.destination.name", "admissions")
+                .setAttribute("messaging.kafka.destination.partition", record.partition())
+                .setAttribute("messaging.kafka.message.offset", record.offset())
+                .setAttribute("wait.ms", waited);
+        SpanContext publisher = publisherContext(record);
+        if (publisher != null) {
+            builder.setParent(Context.root().with(Span.wrap(publisher)));
+        }
+        builder.startSpan().end(received, TimeUnit.MILLISECONDS);
+    }
+
     private void consume(List<ConsumerRecord<String, String>> records) {
+        // 이 배치를 손에 쥔 시각. 여기서 record.timestamp() 를 빼면 "발행된 뒤 집히기까지" 이고,
+        //   아래 now 에서 이 값을 빼면 "집은 뒤 처리에 쓴 시간" 이다. 둘로 갈라야 느릴 때
+        //   발행·브로커 쪽인지 이 파드 쪽인지 판단할 수 있다.
+        long received = System.currentTimeMillis();
         List<AdmittedService.Admission> valid = new ArrayList<>(records.size());
         List<Long> validPublishedAts = new ArrayList<>(records.size());
+        List<ConsumerRecord<String, String>> validRecords = new ArrayList<>(records.size());
 
         for (ConsumerRecord<String, String> record : records) {
             String message = record.value();
@@ -176,6 +231,7 @@ public final class AdmissionConsumer {
             }
             valid.add(new AdmittedService.Admission(e.movieId(), e.requestId()));
             validPublishedAts.add(record.timestamp());
+            validRecords.add(record);
         }
 
         if (!valid.isEmpty()) {
@@ -183,14 +239,34 @@ public final class AdmissionConsumer {
         }
 
         long now = System.currentTimeMillis();
+        int slowCount = 0;
+        long slowestWait = 0;
         for (int i = 0; i < valid.size(); i++) {
             count("ok");
-            long elapsed = now - validPublishedAts.get(i);
+            long publishedAt = validPublishedAts.get(i);
+            long elapsed = now - publishedAt;
             if (elapsed >= 0) {
                 lag.record(elapsed, TimeUnit.MILLISECONDS);
+            }
+            long waited = received - publishedAt;
+            if (waited >= 0) {
+                queueWait.record(waited, TimeUnit.MILLISECONDS);
+                if (waited >= SLOW_WAIT_MS) {
+                    slowCount++;
+                    slowestWait = Math.max(slowestWait, waited);
+                    waitSpan(validRecords.get(i), publishedAt, received, waited);
+                }
             }
         }
         // 건별 info 로그는 두지 않는다 — 오픈 순간 초당 수백 줄이 되고, 건별 내용은 트레이스에 있다.
         log.info("입장 인증 추가: batch={} skipped={}", valid.size(), records.size() - valid.size());
+        // 느린 배치만 한 줄 더. 파티션을 같이 적는 이유 — 특정 파티션만 느리면 그 리더 브로커나
+        //   그 파티션을 맡은 컨슈머 하나의 문제이고, 전 파티션이 같이 느리면 발행 쪽이나 브로커 전체다.
+        //   이 한 줄이 그 갈림을 로그만으로 세운다.
+        if (slowCount > 0) {
+            ConsumerRecord<String, String> first = validRecords.get(0);
+            log.warn("입장 전달 지연: batch={} slow={} slowestWaitMs={} handleMs={} partition={} offset={}",
+                    valid.size(), slowCount, slowestWait, now - received, first.partition(), first.offset());
+        }
     }
 }
