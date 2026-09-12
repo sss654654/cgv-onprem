@@ -140,6 +140,9 @@ cgv:
   # 한 요청에 담을 수 있는 좌석 수 상한. 상한이 없으면 좌석번호 수만 개를 담은 요청 하나가
   # 그만큼의 키를 Lua로 넘겨, queue와 공유하는 단일 스레드 Redis를 그 실행 동안 통째로 멈춘다.
   max-seats-per-request: ${MAX_SEATS_PER_REQUEST:8}
+  # 기동 예열(kafka/AdmissionWarmUp) 반복 수. 한 번에 50건이라 400 이면 20,000건 —
+  #   C2 컴파일이 걸리는 호출 수(기본 1만–1.5만)를 넘긴다. 로컬 개발에서 끄려면 0.
+  warmup-rounds: ${WARMUP_ROUNDS:400}
   branches: "용산아이파크몰,왕십리,영등포,강남,신촌"   # 지점 5
   screens-per-branch: 4           # 관 4 → 회차 20
   rows: 10                        # A~J

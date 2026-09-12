@@ -40,6 +40,15 @@ type Client struct {
 // ★ MaxRetries 3 → 1. 타임아웃 2초 × 재시도 3회 = 6초 꼬리를 4초로 묶는다.
 //   버스트에서는 재시도가 churn 의 재료이고, 장애에서는 fast fail 이 더 낫다.
 //
+// ★ ConnMaxIdleTime -1 (2026-09-13). 기본값은 30분이다 — 30분 넘게 안 쓴 커넥션은 다음에 꺼낼 때
+//   버리고 새로 dial 한다(go-redis v9 pool.Get → isHealthyConn → CloseReasonStale). 위의 MinIdleConns 는
+//   기동 때 채울 뿐이라, 오픈까지 몇 시간 비어 있으면 그 50개가 오픈 순간에 전부 만료 판정을 받고
+//   콜드스타트가 그대로 돌아온다. stg 에서 예열 뒤 4시간 유휴 상태를 실제로 봤다 — idle 50 으로
+//   보이지만 UsedAt 이 4시간 전이라 첫 요청이 전부 재dial 이 될 상태였다.
+//   티켓 오픈은 늘 긴 유휴 뒤에 온다. 만료를 끄고 연결은 TCP keepalive(dialer 기본 5분)가 지킨다.
+//   서버(ElastiCache timeout 0)도 유휴 연결을 안 끊는다. 끊긴 연결은 꺼낼 때 소켓 검사(connCheck)가
+//   잡아 버리므로 죽은 커넥션을 쓰는 일은 없다.
+//
 // useTLS: 연결을 TLS 로 감싼다. 서버 인증서는 검증한다 — 검증을 끄면 같은 VPC 안에서
 // 주소를 가로챈 쪽에 그대로 붙어 비밀번호를 넘겨주게 되고, 암호화를 켠 이유가 사라진다.
 // ServerName 은 주소의 호스트에서 채워진다(crypto/tls DialWithDialer). ElastiCache 는
@@ -64,6 +73,7 @@ func New(addr, password string, poolSize int, masterName string, sentinelAddrs [
 			ReadTimeout:      2 * time.Second,
 			WriteTimeout:     2 * time.Second,
 			MaxRetries:       1,
+			ConnMaxIdleTime:  -1,
 		}
 		if poolSize > 0 {
 			fo.PoolSize = poolSize
@@ -76,10 +86,11 @@ func New(addr, password string, poolSize int, masterName string, sentinelAddrs [
 		Password:     password,
 		DB:           0,
 		TLSConfig:    tlsConf,
-		DialTimeout:  2 * time.Second,
-		ReadTimeout:  2 * time.Second,
-		WriteTimeout: 2 * time.Second,
-		MaxRetries:   1,
+		DialTimeout:     2 * time.Second,
+		ReadTimeout:     2 * time.Second,
+		WriteTimeout:    2 * time.Second,
+		MaxRetries:      1,
+		ConnMaxIdleTime: -1,
 	}
 	if poolSize > 0 {
 		opts.PoolSize = poolSize
@@ -118,8 +129,7 @@ func instrument(rdb *goredis.Client) *goredis.Client {
 }
 
 // Ping은 Redis 도달 여부를 확인한다(헬스체크 /health/ready용).
-// 실효 상한은 클라이언트 Read/WriteTimeout(500ms)이 지배한다 — 여기 2s ctx는
-// 그보다 넓은 상한일 뿐(go-redis는 둘 중 이른 데드라인을 택함).
+// 상한은 클라이언트 Read/WriteTimeout(2s)과 여기 2s ctx 중 이른 쪽이다.
 func (c *Client) Ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()

@@ -232,6 +232,17 @@ public final class AdmissionConsumer {
     }
 
     private void consume(List<ConsumerRecord<String, String>> records) {
+        consume(records, false);
+    }
+
+    // 기동 예열(AdmissionWarmUp)이 부른다. 파싱과 인증 발급은 실제 경로 그대로 돌리고, 그 뒤의
+    //   지표 · 스팬 · 로그는 남기지 않는다. booking_admissions_total 은 queue 의 발행 건수와 같아야
+    //   하는 불변식의 한쪽이고, 전파 지연 히스토그램에 예열 표본(0ms)이 섞이면 SLO 가 좋아 보인다.
+    void warm(List<ConsumerRecord<String, String>> records) {
+        consume(records, true);
+    }
+
+    private void consume(List<ConsumerRecord<String, String>> records, boolean warm) {
         // 이 배치를 손에 쥔 시각. 여기서 record.timestamp() 를 빼면 "발행된 뒤 집히기까지" 이고,
         //   아래 now 에서 이 값을 빼면 "집은 뒤 처리에 쓴 시간" 이다. 둘로 갈라야 느릴 때
         //   발행·브로커 쪽인지 이 파드 쪽인지 판단할 수 있다.
@@ -262,6 +273,9 @@ public final class AdmissionConsumer {
 
         if (!valid.isEmpty()) {
             admitted.addAll(valid);   // 멱등. 실패 시 throw → 배치 재시도
+        }
+        if (warm) {
+            return;
         }
 
         long now = System.currentTimeMillis();

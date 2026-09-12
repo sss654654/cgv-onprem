@@ -18,6 +18,7 @@ public class CgvProps {
     private int admittedTtlSeconds;   // 입장 인증(admitted) 만료 — queue 세션 타임아웃보다 길어야 함
     private int maxSeatsPerRequest;   // 한 요청에 담을 수 있는 좌석 수 상한
     private String adminToken = "";   // 초기화 API 인증 토큰. 빈 값이면 그 API가 등록되지 않음
+    private int warmupRounds;         // 기동 예열 반복 수(50건 배치 기준). 0 이면 예열하지 않음
 
     public String[] branchList() { return branches.split(","); }
 
@@ -43,4 +44,6 @@ public class CgvProps {
     public void setMaxSeatsPerRequest(int v) { this.maxSeatsPerRequest = v; }
     public String getAdminToken() { return adminToken; }
     public void setAdminToken(String v) { this.adminToken = v == null ? "" : v; }
+    public int getWarmupRounds() { return warmupRounds; }
+    public void setWarmupRounds(int v) { this.warmupRounds = v; }
 }
