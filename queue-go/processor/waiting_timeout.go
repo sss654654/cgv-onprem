@@ -12,7 +12,10 @@ import (
 // WaitingTimeoutProcessor = 폴링이 끊긴 대기자를 주기적으로 evict한다.
 // SSE 연결끊김 감지의 폴링판 — "마지막 폴링(lastseen)이 오래된 사람 = 나간 것"으로 유추.
 // waiting·waiting_lastseen 둘 다에서 원자 제거(ExpireWaiting — 두 키 정합 규칙).
-// [2-1] 로컬은 단일 인스턴스라 그냥 돎(멀티팟 리더선출은 2-2).
+// 파드가 여럿이면 이 루프도 파드마다 돈다. 리더를 뽑지 않는 이유는 제거가 Lua 한 번으로
+// 끝나기 때문이다 — 먼저 실행한 파드가 대상을 가져가고 ZREM 까지 마치므로, 뒤이어 실행한
+// 파드는 빈 목록을 받는다. 같은 사람을 두 번 내보내거나 실황에 두 번 찍히지 않는다.
+// 대가는 파드 수만큼 늘어나는 ZRANGEBYSCORE 한 번씩이다.
 type WaitingTimeoutProcessor struct {
 	rdb      *redis.Client
 	timeout  time.Duration // 이 시간 이상 폴링 없으면 evict(폴링 주기보다 넉넉히)

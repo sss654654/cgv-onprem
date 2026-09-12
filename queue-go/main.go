@@ -64,7 +64,7 @@ func main() {
 
 	// 3) Redis 클라이언트(lazy 연결·풀 크기는 env, 호출 타임아웃 500ms).
 	//    sentinelAddrs 있으면 Sentinel-aware(HA), 없으면 standalone(로컬·dev 단일).
-	rdb := redis.New(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisPoolSize, cfg.RedisMasterName, cfg.RedisSentinelAddrs)
+	rdb := redis.New(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisPoolSize, cfg.RedisMasterName, cfg.RedisSentinelAddrs, cfg.RedisTLS)
 
 	// 4) Kafka — 즉시 반환(토픽 보장은 백그라운드). Kafka가 기동을 막지 않는다.
 	kp := kafka.NewProducer(ctx, cfg.KafkaBroker)

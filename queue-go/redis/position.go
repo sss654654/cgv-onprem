@@ -46,8 +46,9 @@ redis.call('ZADD', KEYS[3], now, m)
 return {'WAITING', position, behind}
 `)
 
-// Position = 폴링 순번 조회.
-// [2-1] 로컬은 캐시 없이 매 요청 직접 조회(부하 없음). 캐싱은 2-2에서.
+// Position = 폴링 순번 조회. 캐시 없이 매 요청 Redis 를 직접 본다 —
+// 순번은 사람마다 다른 값이라 공유 캐시가 성립하지 않고, 한 사람 것을 캐시하면
+// 폴링 주기보다 짧은 수명이라 적중이 안 난다.
 func (c *Client) Position(ctx context.Context, movieID, requestID string, now int64) (PositionResult, error) {
 	keys := []string{ActiveKey(movieID), WaitingKey(movieID), WaitingLastseenKey(movieID)}
 	raw, err := positionScript.Run(ctx, c.rdb, keys, requestID, now).Result()

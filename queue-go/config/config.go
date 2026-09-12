@@ -12,6 +12,10 @@ type Config struct {
 	Port          string        // 리슨 포트 (기본 8090)
 	RedisAddr     string        // host:port (go-redis Options.Addr)
 	RedisPassword string        // 로컬은 빈 값, prod는 주입
+	// RedisTLS = Redis 연결을 TLS 로 감싼다. ElastiCache 는 전송 구간 암호화를 켜야 비밀번호를
+	// 받으므로 둘이 늘 같이 켜진다 — 끄고 비밀번호만 쓰는 조합은 서버가 거부한다.
+	// 파드에서 도는 Redis(로컬 · dev)는 평문이라 끈다.
+	RedisTLS bool
 	MaxSessions   int64         // 입장 정원. 로컬 기본 2.
 	QueueInterval time.Duration // ③ 승격 주기 (기본 2초)
 	BatchSize     int64         // ③ 한 번에 승격 상한(안전밸브). 로컬 기본 100.
@@ -39,6 +43,7 @@ func Load() Config {
 		Port:          getenv("PORT", "8090"),
 		RedisAddr:     getenv("REDIS_HOST", "localhost") + ":" + getenv("REDIS_PORT", "6379"),
 		RedisPassword: getenv("REDIS_PASSWORD", ""),
+		RedisTLS:      getenv("REDIS_TLS", "") == "true",
 		MaxSessions:     getenvInt("MAX_SESSIONS", 2),
 		QueueInterval:   time.Duration(getenvInt("QUEUE_PROCESS_INTERVAL", 2000)) * time.Millisecond,
 		BatchSize:       getenvInt("PROCESSING_BATCH_SIZE", 100),

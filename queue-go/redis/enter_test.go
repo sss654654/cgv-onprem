@@ -28,7 +28,7 @@ func newTestClient(t *testing.T) *Client {
 	if addr == "" {
 		addr = "localhost:6379"
 	}
-	c := New(addr, os.Getenv("REDIS_PASSWORD"), 0, "", nil)
+	c := New(addr, os.Getenv("REDIS_PASSWORD"), 0, "", nil, os.Getenv("REDIS_TLS") == "true")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := c.Ping(ctx); err != nil {

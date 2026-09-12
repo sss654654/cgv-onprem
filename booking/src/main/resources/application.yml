@@ -82,6 +82,11 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}   # 로컬 auth off=빈값. dev HA/prd=redis-secret(#5).
+      ssl:
+        # ElastiCache 는 전송 구간 암호화를 켜야 비밀번호를 받는다 — 끄고 비밀번호만 쓰는 조합을
+        #   서버가 거부한다. 그래서 이 값과 REDIS_PASSWORD 는 늘 같이 켜진다.
+        # 파드에서 도는 Redis(로컬 · dev)는 평문이라 끈다.
+        enabled: ${REDIS_SSL:false}
       # 명령 타임아웃. 없으면 Lettuce 기본 60초라 Redis 가 느려지면 요청이 60초씩 붙잡힌다.
       #   2초 근거(dev 14일 실측, 2026-09-11): 명령 평균 1-5ms, 최대 EXISTS 1.14초 · SET 0.92초 ·
       #   EVALSHA 0.66초, GC 멈춤 최대 0.66초. GC 멈춤도 타임아웃 시계에 들어간다.

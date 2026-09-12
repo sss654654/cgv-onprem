@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"time"
 
@@ -23,7 +24,16 @@ type Client struct {
 // Read/WriteTimeout 500ms: 미설정 시 기본 약 3초 — "느려짐"이 그 3초 동안 고루틴·풀을
 // 조용히 잠그는 꼬리가 되므로 수백 ms에서 fast fail. 실패는 에러로
 // 드러나 관측 신호가 된다.
-func New(addr, password string, poolSize int, masterName string, sentinelAddrs []string) *Client {
+//
+// useTLS: 연결을 TLS 로 감싼다. 서버 인증서는 검증한다 — 검증을 끄면 같은 VPC 안에서
+// 주소를 가로챈 쪽에 그대로 붙어 비밀번호를 넘겨주게 되고, 암호화를 켠 이유가 사라진다.
+// ServerName 은 주소의 호스트에서 채워진다(crypto/tls DialWithDialer). ElastiCache 는
+// 공인 인증서를 쓰므로 루트 인증서를 따로 넣지 않는다.
+func New(addr, password string, poolSize int, masterName string, sentinelAddrs []string, useTLS bool) *Client {
+	var tlsConf *tls.Config
+	if useTLS {
+		tlsConf = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
 	// sentinelAddrs가 있으면 Sentinel-aware(FailoverClient): master가 승격되면 Sentinel에 재조회해
 	// 새 master로 재접속 → failover가 앱까지 반영된다(코드-반영 #3). 없으면 standalone(고정 Addr) =
 	// 로컬 compose·dev 단일 인스턴스 경로. 타임아웃·풀은 양쪽 동일.
@@ -34,6 +44,7 @@ func New(addr, password string, poolSize int, masterName string, sentinelAddrs [
 			Password:         password,
 			SentinelPassword: password, // bitnami auth.sentinel(기본 on): sentinel도 같은 비번
 			DB:               0,
+			TLSConfig:        tlsConf,
 			DialTimeout:      2 * time.Second,
 			ReadTimeout:      500 * time.Millisecond,
 			WriteTimeout:     500 * time.Millisecond,
@@ -47,6 +58,7 @@ func New(addr, password string, poolSize int, masterName string, sentinelAddrs [
 		Addr:         addr,
 		Password:     password,
 		DB:           0,
+		TLSConfig:    tlsConf,
 		DialTimeout:  2 * time.Second,
 		ReadTimeout:  500 * time.Millisecond,
 		WriteTimeout: 500 * time.Millisecond,
