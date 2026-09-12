@@ -101,7 +101,22 @@ export async function api(path, opts = {}) {
     return { ok: false, status: 0, data: null };   // status 0 = 네트워크 실패. 호출부가 재시도를 판단한다.
   }
 }
-export const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'u' + Date.now() + Math.random().toString(16).slice(2));
+// requestId · TAB_ID 의 재료.
+// crypto.randomUUID 는 보안 컨텍스트(https · localhost)에서만 정의된다. 평문 http 로 서비스하면
+//   undefined 라 아래 경로로 내려온다 — 에러가 아니라 조용히 갈린다.
+// 부르는 쪽이 앞 8글자만 잘라 쓰므로(가상 관객 rid · TAB_ID) 무작위가 문자열 앞에 있어야 한다.
+//   시각을 앞에 두면 잘린 뒤 같은 값이 되고, 같은 시각대에 만든 관객이 전부 한 사람이 된다
+//   — 한 명이 자리를 반환하는 순간 나머지가 동시에 EXPIRED 로 빠진다.
+// crypto.getRandomValues 에는 보안 컨텍스트 제약이 없다(제약은 randomUUID 와 crypto.subtle).
+export const uuid = () => {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  b[6] = (b[6] & 0x0f) | 0x40;   // version 4
+  b[8] = (b[8] & 0x3f) | 0x80;   // variant 10x
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+};
 export const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 export const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
