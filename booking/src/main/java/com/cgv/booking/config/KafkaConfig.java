@@ -81,6 +81,22 @@ public class KafkaConfig {
         factory.setBatchListener(true);
         // 배치 리스너의 커밋은 배치 단위여야 한다 — 설정이 record여도 여기서 batch로 고정
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.BATCH);
+        // 오프셋 커밋을 비동기로 돌린다.
+        //
+        // 기본값은 동기 커밋이라 배치마다 브로커 응답을 기다린다. 그 대기가 소비 사이클을
+        //   지배한다 — 2026-09-12 stg 1만 명 판 실측:
+        //     배치 크기 1-4건 · 배치 하나에 12-49ms · 커밋 지연 평균 62ms · 최대 151ms
+        //   1건짜리 배치도 34ms 가 걸렸다. 비용이 건당이 아니라 배치당이고 대부분이 커밋이다.
+        //   그 결과 배출이 초당 약 270건에 묶였고, 예매 오픈 순간 정원 1,000 이 한꺼번에 차면서
+        //   동시에 발행된 묶음을 소화하는 데 3.5초가 걸렸다. 트레이스에서 발행 호출은 82ms 에
+        //   끝났고 그 뒤 3.57초 동안 브로커에 있는 채로 아무도 가져가지 않았다.
+        //
+        // 대가는 재시작 시 재처리다. 커밋이 늦게 반영된 구간을 다시 읽는데, 이 리스너가 하는
+        //   일(입장 인증 발급)은 멱등이라(TTL 재설정) 같은 레코드를 다시 처리해도 결과가 같다.
+        //   at-least-once 를 이미 전제로 둔 설계라 보장 수준은 바뀌지 않는다.
+        // 커밋 실패는 조용히 지나가지 않는다 — 다음 커밋이 더 큰 오프셋으로 덮고,
+        //   그래도 실패가 이어지면 재시작 때 그만큼 다시 읽는다(위의 멱등성이 받는다).
+        factory.getContainerProperties().setSyncCommits(false);
         factory.setCommonErrorHandler(kafkaErrorHandler);
         return factory;
     }

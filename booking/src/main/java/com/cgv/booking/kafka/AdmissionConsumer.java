@@ -2,6 +2,7 @@ package com.cgv.booking.kafka;
 
 import com.cgv.booking.redis.AdmittedService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.opentelemetry.api.trace.Span;
@@ -43,6 +44,8 @@ public final class AdmissionConsumer {
     private final MeterRegistry meterRegistry;
     private final Timer lag;
     private final Timer queueWait;
+    private final Timer handle;
+    private final DistributionSummary batchSize;
     private final Tracer tracer;
     // 이 시간을 넘게 기다린 레코드만 span 과 경고 로그를 남긴다.
     // 전부 남기면 오픈 순간에 span 이 레코드 수만큼 늘어 수집이 한도에 닿는다 — 실제로
@@ -100,6 +103,29 @@ public final class AdmissionConsumer {
                         Duration.ofMillis(250), Duration.ofMillis(500), Duration.ofSeconds(1),
                         Duration.ofMillis(2500), Duration.ofSeconds(5), Duration.ofSeconds(10),
                         Duration.ofSeconds(20), Duration.ofSeconds(30), Duration.ofSeconds(60))
+                .register(meterRegistry);
+        // booking_admission_handle_seconds — 배치를 받은 뒤 인증을 다 만들기까지.
+        // 위 둘을 빼서 구하지 않고 따로 잰다. lag 과 wait 은 각각 히스토그램이라 분위수끼리
+        //   빼면 서로 다른 레코드의 값을 빼는 셈이 된다 — 2026-09-12 판에서 실제로 그렇게 읽다가
+        //   "처리 4ms" 라는 없는 수를 만들었다. 직접 재면 그 계산이 필요 없다.
+        // 눈금을 앞쪽으로 당겼다. 이 구간은 Redis 파이프라인 한 번이라 정상값이 수 ms 이고,
+        //   lag 과 같은 눈금(첫 칸 1ms)이면 분위수가 첫 칸에 붙어 아무것도 안 갈린다.
+        this.handle = Timer.builder("booking.admission.handle")
+                .description("배치 수신 → 입장 인증 발급 완료")
+                .serviceLevelObjectives(
+                        Duration.ofMillis(1), Duration.ofMillis(2), Duration.ofMillis(5),
+                        Duration.ofMillis(10), Duration.ofMillis(25), Duration.ofMillis(50),
+                        Duration.ofMillis(100), Duration.ofMillis(250), Duration.ofMillis(500),
+                        Duration.ofSeconds(1), Duration.ofMillis(2500), Duration.ofSeconds(5))
+                .register(meterRegistry);
+        // booking_admission_batch_size — poll 한 번이 가져온 레코드 수.
+        // 소비 비용이 건당이 아니라 배치당이라(오프셋 커밋 · 호출 · Redis 왕복이 묶음당 1회)
+        //   같은 유입이라도 배치가 잘게 쪼개지면 배출이 그만큼 떨어진다.
+        //   2026-09-12 판에서 배치가 1-4건이었고 1건짜리도 34ms 가 걸려 배출이 초당 270건에
+        //   묶였는데, 그 사실을 트레이스를 열어서야 알았다. 지표로 두면 판마다 바로 보인다.
+        this.batchSize = DistributionSummary.builder("booking.admission.batch.size")
+                .description("admissions poll 한 번이 가져온 레코드 수")
+                .serviceLevelObjectives(1, 2, 5, 10, 25, 50, 100, 250, 500)
                 .register(meterRegistry);
     }
 
@@ -239,6 +265,8 @@ public final class AdmissionConsumer {
         }
 
         long now = System.currentTimeMillis();
+        batchSize.record(records.size());
+        handle.record(now - received, TimeUnit.MILLISECONDS);
         int slowCount = 0;
         long slowestWait = 0;
         int slowestIndex = -1;

@@ -1,11 +1,9 @@
 package com.cgv.booking.service;
 
 import com.cgv.booking.domain.Screening;
-import com.cgv.booking.redis.AdmittedService;
 import com.cgv.booking.redis.SeatLockService;
 import com.cgv.booking.repo.BookingSeatRepository;
 import com.cgv.booking.repo.ScreeningRepository;
-import com.cgv.booking.web.ApiException;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -22,12 +20,11 @@ public class ScreeningService {
     private final ScreeningRepository screenings;
     private final BookingSeatRepository bookingSeats;
     private final SeatLockService locks;
-    private final AdmittedService admitted;
 
     public ScreeningService(ScreeningRepository screenings, BookingSeatRepository bookingSeats,
-                            SeatLockService locks, AdmittedService admitted) {
+                            SeatLockService locks) {
         this.screenings = screenings; this.bookingSeats = bookingSeats;
-        this.locks = locks; this.admitted = admitted;
+        this.locks = locks;
     }
 
     public record ScreeningView(String screeningId, String branch, int screenNo, int total, int remain) {}
@@ -39,11 +36,21 @@ public class ScreeningService {
     // 데이터는 아래 캐시(cachedCompute)를 board 와 공유한다 — 같은 compute 를 쓰는 같은 숫자이고,
     //   예매 오픈 순간 정원 전체가 이 화면을 동시에 열어 캐시 없이는 그 인원만큼 compute 가 몰린다.
     //   1초 묵은 잔여수는 무해하다 — 좌석 확보 판정은 select·확정의 실검증이 따로 한다.
+    // ★ 여기에는 게이트를 두지 않는다(2026-09-12).
+    //
+    // 지키는 것이 없었다. 이 메서드가 돌려주는 값은 아래 board 와 같은 cachedCompute 이고,
+    //   board 는 게이트 없이 공개돼 있다. 즉 같은 숫자를 한쪽은 막고 한쪽은 열어 두고 있었다.
+    // 대신 비용이 컸다. 게이트는 queue 가 입장을 확정한 뒤 그 사실이 Kafka 로 booking 까지
+    //   건너와야 통과한다. 그 사이에 이 화면을 부르면 403 이고, 사용자 눈에는 "입장했는데
+    //   거절당했다" 가 된다. 2026-09-12 stg 1만 명 판에서 입장 직후 403 재시도가 1,673회,
+    //   입장자의 9.7% 가 전달을 1-5초 기다렸다.
+    // 게이트는 좌석부터 선다 — SeatService(조회 · 선점)와 BookingService(확정)에 그대로 있다.
+    //   막아야 하는 것은 좌석 정보와 좌석을 잡는 행위이지 회차 목록이 아니다.
+    // 이 배치가 전달 지연을 흡수한다. 사람은 회차를 고르는 데 시간을 쓰고(부하 판 기준 2-8초),
+    //   그 동안 인증이 도착한다. 시스템을 바꾸지 않고 창이 사라진다.
+    // requestId 는 받되 쓰지 않는다 — 프런트와 부하 스크립트가 이미 붙여 보내고 있고,
+    //   빼면 그쪽을 같이 고쳐야 한다. 게이트를 되살릴 자리를 남겨 두는 뜻도 있다.
     public List<ScreeningView> listForMovie(String movieId, String requestId) {
-        // 게이트: 방송 입장객 아니면 403.
-        if (!admitted.isAdmitted(movieId, requestId)) {
-            throw ApiException.forbidden("입장객이 아닙니다(미승인). 대기열을 거쳐 입장하세요.");
-        }
         return cachedCompute(movieId);
     }
 

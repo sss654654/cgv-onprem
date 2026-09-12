@@ -6,13 +6,17 @@ server:
   #   @Valid 의 필드 검증(좌석 8개 등)은 역직렬화가 끝난 뒤에 도는 것이라 읽는 것 자체를 막지 못한다.
   #   이 API 들이 받는 본문은 좌석 번호 몇 개 수준이다.
   tomcat:
-    # 스레드 풀 지표(tomcat_threads_busy · tomcat_threads_config_max)를 내보낸다.
+    # Tomcat 지표(tomcat_connections_* · tomcat_global_* · tomcat_sessions_*)를 내보낸다.
     #   Micrometer 는 Tomcat 의 MBean 을 읽어 이 값을 만드는데, Spring Boot 는 MBean 등록을
-    #   기본으로 끄기 때문에 이 한 줄이 없으면 지표 자체가 생기지 않는다.
-    # 이게 없으면 "요청이 스레드를 기다리는 시간" 이 어느 지표에도 안 잡힌다.
-    #   http_server_requests 는 스레드를 잡은 뒤부터 재고, active 도 잡은 것만 센다.
+    #   기본으로 끄기 때문에 이 한 줄이 없으면 지표가 하나도 생기지 않는다.
+    # 없으면 "요청이 앱에 들어오기 전에 기다린 시간" 이 어느 지표에도 안 잡힌다.
+    #   http_server_requests 는 처리가 시작된 뒤부터 재므로 그 앞 구간은 앱이 모른다.
     #   2026-09-12 stg 1만 명 판에서 ALB 가 잰 p99 가 48초인데 앱이 잰 것은 4.33초였다.
-    #   그 44초가 이 대기이고, 지표가 없어 화면에서는 두 값이 왜 다른지 설명할 수 없었다.
+    #   그 44초를 볼 자리가 여기다.
+    # ★ 볼 것은 스레드가 아니라 연결이다. 이 앱은 가상 스레드로 돌아(spring.threads.virtual)
+    #   고정 스레드 풀이 없고, tomcat_threads_busy · current · config_max 는 전부 -1 로 나온다.
+    #   요청마다 가상 스레드가 하나씩 생기므로 스레드를 기다리는 일이 없고,
+    #   대신 연결 상한(maxConnections 기본 8192)이 그 자리를 맡는다.
     mbeanregistry:
       enabled: true
     max-http-form-post-size: 16KB
