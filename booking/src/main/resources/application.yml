@@ -20,7 +20,9 @@ server:
       file-date-format: ''
       rotate: false
       buffered: false
-      pattern: '{"ts":"%t","method":"%m","path":"%U","status":%s,"ms":%D,"remote":"%a","client_ip":"%{CF-Connecting-IP}i"}'
+      # %D 는 이 Tomcat 에서 마이크로초다(실측: curl 왕복 62ms 인 요청이 11090 으로 찍혔다).
+      #   필드 이름을 ms 로 뒀다가 2026-09-12 stg 첫 기동에서 밀리초로 읽어 "8-24초" 로 잘못 판단했다.
+      pattern: '{"ts":"%t","method":"%m","path":"%U","status":%s,"us":%D,"remote":"%a","client_ip":"%{CF-Connecting-IP}i"}'
   max-http-request-header-size: 16KB
 
 spring:
