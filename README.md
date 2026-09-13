@@ -1,6 +1,6 @@
 # cgv-onprem — 폴리글랏 티켓팅 MSA
 
-티켓팅(생중계 좌석 예매) 대기열 시스템. 입장 통제(queue)와 예매(booking)를 서로 다른 언어로 나누고, 둘을 Kafka 이벤트로만 연결해 서비스 간 장애를 격리한다. 온프레미스 k3s 클러스터(dev)에 GitOps로 배포·운영 중이고, 로컬 검증은 `docker-compose`로 한다.
+티켓팅(생중계 좌석 예매) 대기열 시스템. 입장 통제(queue)와 예매(booking)를 서로 다른 언어로 나누고, 둘을 Kafka 이벤트로만 연결해 서비스 간 장애를 격리한다. 온프레미스 k3s 클러스터(dev)에 GitOps로 배포·운영 중이고, 같은 이미지를 AWS EKS(stg)에도 올려 5만 명까지 부하를 쟀다. 로컬 검증은 `docker-compose`로 한다.
 
 - **queue** (Go) — 입장 정원·대기 순번·승격. stateless 폴링 대기열
 - **booking** (Java/Spring) — 좌석 선점·결제·확정. 결제·정합성을 다루는 트랜잭션 서비스
@@ -8,7 +8,7 @@
 
 > **이 GitHub 저장소는 읽기용 미러다.** 실제 작업은 로컬 작업 트리와 셀프호스트 GitLab(데스크탑 Docker)에서 하고, GitLab의 push mirroring이 여기로 자동 반영한다. MR·CI 파이프라인·컨테이너 레지스트리는 GitLab 쪽에 있어 이 저장소에는 결과(커밋)만 보인다.
 >
-> 인프라(k3s·GitOps·관측)는 [cgv-infra](https://github.com/sss654654/cgv-infra), 구축 과정 기록은 [블로그 연재](https://zed6740.tistory.com/category/HomeLab)에 있다.
+> 인프라(k3s·GitOps·관측)는 [cgv-infra](https://github.com/sss654654/cgv-infra), AWS 자원(stg)은 [cgv-terraform](https://github.com/sss654654/cgv-terraform), 구축 과정 기록은 [블로그 연재](https://zed6740.tistory.com/category/HomeLab)에 있다.
 
 ---
 
@@ -32,7 +32,7 @@ KBO 야구의 온라인 예매가 폭주해 예매 서버가 수요를 받아내
 - **booking**은 게이트 뒤에서 좌석·결제를 정합성 있게 처리한다.
 - 둘을 **Kafka로 격리**해 한쪽의 부하·장애가 다른 쪽에 전파되지 않는다.
 
-설계 목표도 이 사건 규모에서 역산한다 — 동시 대기 10만(16만 기준), 좌석 약 4,000석(지점 여럿 × 관당 200석), 오픈 직후 enter 버스트. 이 숫자가 이후 Pod 수·리소스 사이징의 출발점이 된다.
+설계 목표도 이 사건 규모에서 역산한다 — 동시 대기 10만(16만 기준), 좌석 약 4,000석(지점 여럿 × 관당 200석), 오픈 직후 enter 버스트. 이 숫자가 이후 Pod 수·리소스 사이징의 출발점이 된다. 실측으로 확인한 규모는 5만 명이다(stg — 그 위는 부하 발생기 쪽 계정 한도로 재지 못했다).
 
 ---
 
@@ -124,6 +124,7 @@ docker compose up --build -d      # redis · mysql · kafka · queue · booking 
 ## 현재 상태
 
 - **k3s dev 클러스터에서 운영 중**: main 머지 → GitLab CI 6단(check·test·build·scan·publish·cleanup) → 불변 태그(`main-<파이프라인>-<커밋>`) 이미지 → argocd-image-updater가 태그를 GitOps 저장소에 write-back → Argo CD 롤아웃. 배포 선언·클러스터 구성은 [cgv-infra](https://github.com/sss654654/cgv-infra)에 있다.
+- **같은 이미지를 AWS EKS(stg)에도 올린다**: 파이프라인의 `publish-ecr` 수동 job 이 같은 이미지를 커밋 해시 이름으로 ECR 에 올리고(버튼을 누르는 것이 승격 결정이다), image-updater 가 cgv-infra `envs/stg` 에 태그를 되쓴다. dev 와 stg 는 이미지가 같고 환경 변수만 다르다 — Redis 주소 · TLS · 비밀번호 · 풀 크기 · 정원 · 승격 리듬.
 - **관측**: metric·log·trace 세 축이 세 서비스에 계측돼 있고, 클러스터의 LGTM 스택(Mimir·Loki·Tempo + Alloy·Grafana)으로 흐른다. 로컬 compose에는 수집 스택이 없어 exporter가 조용히 쉰다.
 - **세 축이 서로 이어져 있다**
 
@@ -155,6 +156,17 @@ docker compose up --build -d      # redis · mysql · kafka · queue · booking 
   | 앱 전체 정지 · 5xx 초당 467건 | 회차 집계 캐시가 만료되는 순간 대기 중인 전원이 동시에 계산 | single-flight — 만료를 본 요청 중 하나만 계산하고 나머지는 직전 값을 받는다 |
   | 인증 지연 p99 19.86초 | 로비의 좌석 현황판 폴링이 booking CPU를 차지해 Kafka 리스너가 순서를 못 받음 | 응답에 `Cache-Control`을 붙여 CDN 엣지가 받게 함 |
   | 영화 목록이 booking을 때림 | 대기열 게이트 밖 경로라 인원에 정비례 | nginx 캐시 10초 + 캐시 잠금 |
+- **stg(EKS) 부하 판에서 드러나 앱에서 고친 것** — 1만 · 2.5만 · 5만 명 판에서 SLO 다섯(로비 · 줄서기 · 순번 조회 · 입장 전파 · 예매 여정)을 통과하기까지.
+
+  | 무너진 것 | 원인 | 조치 |
+  |---|---|---|
+  | 관객 30명이 한 사람으로 세어짐 | 평문 http 에서는 브라우저가 `crypto.randomUUID` 를 주지 않아 프론트의 시각 기반 폴백 id 가 겹쳤다 | 폴백 수정 (입구는 HTTPS 로 옮겼다) |
+  | 오픈 순간 queue 만 느림 · 풀 대기 2,304건 | 오픈 전 enter 트래픽이 0 이라 Redis 커넥션 풀이 빈 채로 오픈했고, 기동 뒤 30분이 지나면 채워 둔 연결도 유휴 만료됐다 | 기동 때 풀을 채우고 유휴 만료를 끈다 |
+  | 입장 전파 지연 | Kafka 오프셋 동기 커밋 · 지연을 한 덩어리로만 재서 브로커 쪽인지 소비 쪽인지 못 갈랐다 | 비동기 커밋 · 브로커 대기와 처리 시간을 따로 잰다 |
+  | 새로 뜬 booking 이 오픈에 느림 | 소비 경로가 컴파일되기 전에 부하가 온다 | 기동 때 소비 경로를 스스로 데우고 Ready. 이것만으로는 부족해 인프라에서 booking 을 전용 노드로 격리했다 |
+  | 로그 수집이 노드를 채움 | 폴링 경로마다 접근 로그 한 줄 — 2.5만 명에 초당 4,256줄, 수집기가 노드마다 0.37–0.54코어 | 폴링 경로의 성공 응답은 로그를 남기지 않는다(4xx · 5xx 는 남긴다) |
+  | 5만 명 enter 가 지표에서 0 으로 보임 | 경로의 첫 요청이 부하 봉우리면 그 시계열이 그때 처음 생겨 rate · increase 가 앞 표본을 못 찾는다 | 기동 때 경로 · 상태 조합의 시계열을 0 으로 만든다 |
+  | 관리형 Redis 에 인증이 없음 | 보안 그룹은 "어디서 오는가"만 보고 "누구인가"는 못 가른다 | Redis TLS · 비밀번호 지원 |
 
 ### 확정 스펙 (부하 실측)
 
@@ -175,6 +187,8 @@ queue            4 replicas · limit 1코어 / 256Mi
 로컬 `docker-compose`는 다른 값이다(`MAX_SESSIONS=2`). 대기열 동작을 바로 보려고 낮춰 뒀다.
 공개 사이트의 정원도 위 실측값보다 낮다 — 1,000이면 방문자가 가상 관객을 넣어도 전원이 즉시
 입장해 대기열이 화면에 안 나타난다.
+
+stg(EKS)의 값은 부하 판에서 더 갈렸다 — 정원 1,000 · 승격 50명/0.5초 · queue CPU 4코어 · Redis 풀 100 · booking 두 대(Flyway 가 스키마를 DB 잠금 아래 한 대만 적용). 값과 근거 수치는 cgv-infra `envs/stg/` 주석에 있다.
 
 ---
 
