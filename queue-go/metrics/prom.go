@@ -69,6 +69,31 @@ func GinMiddleware() gin.HandlerFunc {
 	}
 }
 
+// PrewarmHTTPSeries = 경로·상태 조합의 시계열을 기동 때 0 으로 만들어 둔다.
+//
+// HistogramVec 의 자식은 첫 관측 때 생긴다. 그 경로의 첫 요청이 부하의 봉우리에서 들어오면
+//   시계열이 그 스크레이프에서 처음 나타나고, 그 첫 표본에 이미 봉우리 전체가 들어 있다.
+//   rate·increase 는 앞 표본이 없으면 증가를 계산하지 못하고, 그 뒤로는 카운터가 평평해서
+//   0 을 낸다. 2026-09-13 5만 명 판에서 enter 50,000건이 통째로 안 보였다 — 대시보드의
+//   줄서기 칸과 판정 스크립트가 둘 다 빈 값을 냈고, 화면은 "요청이 없었다" 로 읽혔다.
+// 0 인 표본이 하나라도 앞에 있으면 그 뒤의 상승을 정상으로 센다.
+//
+// 대상은 사용자당 한 번 부르는 경로다. 폴링 경로(stats·events)는 기동 직후부터 계속 불려서
+//   이 문제가 없지만, position 은 enter 뒤에야 처음 불리므로 같이 넣는다.
+// 시리즈 비용 = 조합당 버킷 13 + sum + count = 15 개, 13 조합이라 195 개.
+func PrewarmHTTPSeries() {
+	for path, statuses := range map[string][]string{
+		"/api/admission/enter":    {"200", "202", "400", "503"},
+		"/api/admission/position": {"200", "400", "503"},
+		"/api/admission/leave":    {"200", "400", "503"},
+		"/api/admission/complete": {"200", "400", "503"},
+	} {
+		for _, s := range statuses {
+			httpDuration.WithLabelValues(path, s)
+		}
+	}
+}
+
 // ── 행2 · 대기열: 줄과 회전 ──────────────────────────────────────────────────
 var (
 	waitingGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{

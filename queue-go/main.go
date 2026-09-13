@@ -152,6 +152,9 @@ func main() {
 	health := handler.NewHealth(rdb)
 	health.Register(r)
 	handler.NewAdmission(rdb, cfg.MaxSessions, cfg.SessionTimeout, kp, rate, cfg.AdminToken).Register(r)
+	// 위에서 등록한 경로의 지표 시계열을 0 으로 만들어 둔다. 안 하면 그 경로의 첫 요청이
+	//   봉우리에서 들어올 때 rate·increase 가 그 봉우리를 통째로 놓친다(metrics.PrewarmHTTPSeries).
+	metrics.PrewarmHTTPSeries()
 
 	// 9) HTTP 서버 — r.Run() 대신 http.Server: graceful drain(Shutdown)을 쓰기 위한 교체
 	//    + gin 기본은 타임아웃 무제한이라 명시(판정 ⑤ — 폴링=짧은 요청 전제를 서버가 강제).
