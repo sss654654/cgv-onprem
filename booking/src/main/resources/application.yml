@@ -32,7 +32,14 @@ server:
       suffix: ''
       file-date-format: ''
       rotate: false
-      buffered: false
+      # ★ buffered false → true (2026-09-13). false 면 줄마다 즉시 쓰고 플러시한다 —
+      #   요청마다 커널로 넘어가는 쓰기가 한 번씩 생긴다. 2.5만 명 부하에서 이 파드가
+      #   초당 837건을 받았고, 그때 노드 CPU 를 모드로 가르면 커널 몫이 0.82 코어였다.
+      #   대가는 파드가 갑자기 죽을 때 버퍼에 남아 있던 마지막 줄이 사라지는 것이다.
+      buffered: true
+      # 이 이름의 요청 속성이 붙어 있으면 그 요청은 기록하지 않는다.
+      #   속성은 AccessLogSkipConfig 가 성공한 현황판 요청에만 붙인다(이유는 그 파일에).
+      condition-unless: skipAccessLog
       # %D 는 이 Tomcat 에서 마이크로초다(실측: curl 왕복 62ms 인 요청이 11090 으로 찍혔다).
       #   필드 이름을 ms 로 뒀다가 2026-09-12 stg 첫 기동에서 밀리초로 읽어 "8-24초" 로 잘못 판단했다.
       pattern: '{"ts":"%t","method":"%m","path":"%U","status":%s,"us":%D,"remote":"%a","client_ip":"%{CF-Connecting-IP}i"}'

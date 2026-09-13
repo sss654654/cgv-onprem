@@ -129,12 +129,23 @@ func main() {
 	r.Use(func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		if path := c.FullPath(); path != "" {
-			slog.InfoContext(c.Request.Context(), "request",
-				"method", c.Request.Method, "path", path,
-				"status", c.Writer.Status(), "ms", time.Since(start).Milliseconds(),
-				"client_ip", clientIP(c))
+		path := c.FullPath()
+		if path == "" {
+			return
 		}
+		// ★ 순번 조회가 성공했으면 남기지 않는다 (2026-09-13).
+		//   줄 서 있는 사람 전원이 1–5초마다 부르는 경로라 인원에 정비례해서 줄이 늘어난다.
+		//   2.5만 명 부하에서 6분 동안 1,058,599건이었고, 그때 클러스터 전체 로그가
+		//   초당 4,256줄이었다. 로그를 읽어 보내는 DaemonSet 이 노드마다 0.37–0.54 코어를 썼다.
+		//   4xx·5xx 는 그대로 남으므로 남용과 오류는 여기서 계속 드러나고,
+		//   건수·지연은 queue_http_request_duration_seconds 가 경로별로 센다.
+		if c.Writer.Status() < 400 && path == "/api/admission/position" {
+			return
+		}
+		slog.InfoContext(c.Request.Context(), "request",
+			"method", c.Request.Method, "path", path,
+			"status", c.Writer.Status(), "ms", time.Since(start).Milliseconds(),
+			"client_ip", clientIP(c))
 	})
 
 	// 8) 라우트 — 헬스 + 대기열(enter·position·leave·complete).
